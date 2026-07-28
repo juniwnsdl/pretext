@@ -4,6 +4,11 @@ import { Badge } from '@/components/ui/badge';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { GripHorizontal } from 'lucide-react';
+import {
+  applyChunkBoundary,
+  getTopLevelBoundaryOffsets,
+  selectNearestRenderedBoundary,
+} from '@/lib/chunk-boundary';
 
 interface ChunkFlowViewerProps {
   chunks: string[];
@@ -12,16 +17,19 @@ interface ChunkFlowViewerProps {
 
 interface HoverSplitInfo {
   chunkIndex: number;
-  offset: number; // Offset relative to the chunk start
+  offset: number;
   clientY: number;
-  clientX: number;
   contextBefore: string;
   contextAfter: string;
 }
 
-// ReactMarkdown 플러그인: 모든 요소에 data-source-pos 속성을 주입하여 원본 위치 추적
-const addSourcePosPlugin = () => {
+// 유효한 Markdown 블록 경계를 렌더링된 요소와 연결한다.
+const addBoundaryPositionsPlugin = () => {
   return (tree: any) => {
+    const boundaryOffsets = new Set(
+      getTopLevelBoundaryOffsets(tree.children || []),
+    );
+
     const visit = (node: any) => {
       if (node.position && node.position.start && node.type !== 'root') {
         if (!node.data) node.data = {};
@@ -32,6 +40,16 @@ const addSourcePosPlugin = () => {
         node.children.forEach(visit);
       }
     };
+
+    for (const node of tree.children || []) {
+      const offset = node.position?.start?.offset;
+      if (typeof offset !== 'number' || !boundaryOffsets.has(offset)) continue;
+
+      if (!node.data) node.data = {};
+      if (!node.data.hProperties) node.data.hProperties = {};
+      node.data.hProperties['data-chunk-boundary-offset'] = offset;
+    }
+
     visit(tree);
   };
 };
@@ -44,6 +62,7 @@ export function ChunkFlowViewer({ chunks, onChunkUpdate }: ChunkFlowViewerProps)
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chunkRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const hoverSplitInfoRef = useRef<HoverSplitInfo | null>(null);
 
   // 시각적 구분을 위한 파스텔 톤 색상 팔레트
   const chunkColors = [
@@ -58,186 +77,80 @@ export function ChunkFlowViewer({ chunks, onChunkUpdate }: ChunkFlowViewerProps)
 
     const handleMouseMove = (e: MouseEvent) => {
       e.preventDefault();
-      
-      // Find the element under cursor
-      let targetRange: Range | null = null;
-      let targetNode: Node | null = null;
-      let targetOffset = 0;
 
-      if (document.caretRangeFromPoint) {
-        targetRange = document.caretRangeFromPoint(e.clientX, e.clientY);
-        if (targetRange) {
-          targetNode = targetRange.startContainer;
-          targetOffset = targetRange.startOffset;
-        }
-      } else if ((document as any).caretPositionFromPoint) {
-        const pos = (document as any).caretPositionFromPoint(e.clientX, e.clientY);
-        if (pos) {
-          targetNode = pos.offsetNode;
-          targetOffset = pos.offset;
-        }
-      }
-
-      if (!targetNode) return;
-
-      // Find which chunk this node belongs to
-      const chunkDiv = (targetNode.nodeType === Node.ELEMENT_NODE 
-        ? targetNode as Element 
-        : targetNode.parentElement)?.closest('[data-chunk-index]') as HTMLElement;
+      const chunkDiv = document
+        .elementFromPoint(e.clientX, e.clientY)
+        ?.closest('[data-chunk-index]') as HTMLElement | null;
 
       if (!chunkDiv) return;
 
       const targetChunkIndex = parseInt(chunkDiv.dataset.chunkIndex || '-1');
-      
-      // Valid targets are (draggingIndex - 1) and draggingIndex
-      // e.g. dragging between 0 and 1 (draggingIndex=1). Valid: 0 and 1.
       if (targetChunkIndex !== draggingIndex - 1 && targetChunkIndex !== draggingIndex) return;
 
-      // Find source pos
-      const sourcePosElement = (targetNode.nodeType === Node.ELEMENT_NODE
-        ? targetNode as Element
-        : targetNode.parentElement)?.closest('[data-source-pos]') as HTMLElement;
-
-      let baseOffset = 0;
-      if (sourcePosElement && sourcePosElement.dataset.sourcePos) {
-        baseOffset = parseInt(sourcePosElement.dataset.sourcePos, 10);
-      }
-
-      let currentChunkOffset = baseOffset + targetOffset;
       const targetChunkText = chunks[targetChunkIndex];
+      const renderedBoundaries = Array.from(
+        chunkDiv.querySelectorAll<HTMLElement>('[data-chunk-boundary-offset]'),
+      )
+        .filter((element) => element.closest('[data-chunk-index]') === chunkDiv)
+        .map((element) => ({
+          chunkIndex: targetChunkIndex,
+          offset: Number(element.dataset.chunkBoundaryOffset),
+          clientY: element.getBoundingClientRect().top,
+        }))
+        .filter(
+          (boundary) =>
+            Number.isFinite(boundary.offset) &&
+            boundary.offset > 0 &&
+            boundary.offset < targetChunkText.length,
+        );
 
-      // Snap to nearest newline
-      // We want to find the nearest split point that corresponds to a line boundary.
-      // Valid split points are: 0 (start), or index+1 where targetChunkText[index] === '\n'.
-      let closestSplitPoint = 0;
-      let minDistance = Math.abs(0 - currentChunkOffset);
+      const selectedBoundary = selectNearestRenderedBoundary(
+        renderedBoundaries,
+        e.clientY,
+      );
 
-      for (let i = 0; i < targetChunkText.length; i++) {
-        if (targetChunkText[i] === '\n') {
-          const splitPoint = i + 1;
-          const dist = Math.abs(splitPoint - currentChunkOffset);
-          if (dist < minDistance) {
-            minDistance = dist;
-            closestSplitPoint = splitPoint;
-          }
-        }
+      if (!selectedBoundary) {
+        hoverSplitInfoRef.current = null;
+        setHoverSplitInfo(null);
+        return;
       }
-      
-      // Also check end of text
-      const endDist = Math.abs(targetChunkText.length - currentChunkOffset);
-      if (endDist < minDistance) {
-        closestSplitPoint = targetChunkText.length;
-      }
 
-      currentChunkOffset = closestSplitPoint;
-      
-      // Extract context for tooltip
       const CONTEXT_LEN = 20;
-      const contextBefore = targetChunkText.substring(Math.max(0, currentChunkOffset - CONTEXT_LEN), currentChunkOffset);
-      const contextAfter = targetChunkText.substring(currentChunkOffset, Math.min(targetChunkText.length, currentChunkOffset + CONTEXT_LEN));
+      const nextHoverSplitInfo: HoverSplitInfo = {
+        ...selectedBoundary,
+        contextBefore: targetChunkText.substring(
+          Math.max(0, selectedBoundary.offset - CONTEXT_LEN),
+          selectedBoundary.offset,
+        ),
+        contextAfter: targetChunkText.substring(
+          selectedBoundary.offset,
+          Math.min(targetChunkText.length, selectedBoundary.offset + CONTEXT_LEN),
+        ),
+      };
 
-      // Try to snap line to text line
-      // Since we snapped the offset to a newline, we should try to find the visual position of that line.
-      // Ideally we'd find the element corresponding to that newline, but markdown rendering makes it hard.
-      // For now, we'll stick with the mouse Y or try to refine it if possible, but the crucial part is the logical offset.
-      
-      let lineY = e.clientY;
-      if (targetRange) {
-         // This gives the bounding rect of the range (which is collapsed)
-         // Sometimes getBoundingClientRect() returns 0 size.
-         const rects = targetRange.getClientRects();
-         if (rects.length > 0) {
-           lineY = rects[0].bottom;
-         } else {
-            const rect = targetRange.getBoundingClientRect();
-            if (rect.height > 0) {
-               lineY = rect.bottom;
-            }
-         }
-      }
-
-      setHoverSplitInfo({
-        chunkIndex: targetChunkIndex,
-        offset: currentChunkOffset,
-        clientY: lineY,
-        clientX: e.clientX,
-        contextBefore,
-        contextAfter
-      });
+      hoverSplitInfoRef.current = nextHoverSplitInfo;
+      setHoverSplitInfo(nextHoverSplitInfo);
     };
 
     const handleMouseUp = () => {
-      if (draggingIndex !== null && hoverSplitInfo && onChunkUpdate) {
-        const { chunkIndex, offset } = hoverSplitInfo;
-        const prevChunkIndex = draggingIndex - 1;
-        const currentChunkIndex = draggingIndex;
+      if (draggingIndex !== null && hoverSplitInfoRef.current && onChunkUpdate) {
+        const newChunks = applyChunkBoundary(
+          chunks,
+          draggingIndex,
+          hoverSplitInfoRef.current,
+        );
 
-        const prevChunk = chunks[prevChunkIndex];
-        const currentChunk = chunks[currentChunkIndex];
-
-        let newPrevChunk = prevChunk;
-        let newCurrentChunk = currentChunk;
-
-        if (chunkIndex === prevChunkIndex) {
-          // Dragged UP into the previous chunk (prevChunkIndex)
-          // Split prevChunk at offset.
-          // Part 1: stays in prevChunk
-          // Part 2: goes to currentChunk
-          const splitPoint = offset;
-          if (splitPoint >= 0 && splitPoint <= prevChunk.length) {
-             newPrevChunk = prevChunk.substring(0, splitPoint);
-             const movedPart = prevChunk.substring(splitPoint);
-             
-             // Check if we need a newline joiner to prevent merging lines
-             let joiner = '';
-             if (movedPart.length > 0 && currentChunk.length > 0) {
-               const lastChar = movedPart[movedPart.length - 1];
-               const firstChar = currentChunk[0];
-               if (lastChar !== '\n' && firstChar !== '\n') {
-                 joiner = '\n';
-               }
-             }
-             
-             newCurrentChunk = movedPart + joiner + currentChunk;
-          }
-        } else if (chunkIndex === currentChunkIndex) {
-          // Dragged DOWN into the current chunk (currentChunkIndex)
-          // Split currentChunk at offset.
-          // Part 1: goes to prevChunk
-          // Part 2: stays in currentChunk
-          const splitPoint = offset;
-          if (splitPoint >= 0 && splitPoint <= currentChunk.length) {
-            const movedPart = currentChunk.substring(0, splitPoint);
-            
-            // Check if we need a newline joiner
-             let joiner = '';
-             if (prevChunk.length > 0 && movedPart.length > 0) {
-               const lastChar = prevChunk[prevChunk.length - 1];
-               const firstChar = movedPart[0];
-               if (lastChar !== '\n' && firstChar !== '\n') {
-                 joiner = '\n';
-               }
-             }
-
-            newPrevChunk = prevChunk + joiner + movedPart;
-            newCurrentChunk = currentChunk.substring(splitPoint);
-          }
-        }
-
-        if (newPrevChunk !== prevChunk || newCurrentChunk !== currentChunk) {
-          const newChunks = [...chunks];
-          newChunks[prevChunkIndex] = newPrevChunk;
-          newChunks[currentChunkIndex] = newCurrentChunk;
-          onChunkUpdate(newChunks);
-        }
+        if (newChunks) onChunkUpdate(newChunks);
       }
 
+      hoverSplitInfoRef.current = null;
       setDraggingIndex(null);
       setHoverSplitInfo(null);
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        hoverSplitInfoRef.current = null;
         setDraggingIndex(null);
         setHoverSplitInfo(null);
       }
@@ -252,7 +165,7 @@ export function ChunkFlowViewer({ chunks, onChunkUpdate }: ChunkFlowViewerProps)
       document.removeEventListener('mouseup', handleMouseUp);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [draggingIndex, chunks, onChunkUpdate, hoverSplitInfo]);
+  }, [draggingIndex, chunks, onChunkUpdate]);
 
   if (!chunks || chunks.length === 0) {
     return (
@@ -290,7 +203,7 @@ export function ChunkFlowViewer({ chunks, onChunkUpdate }: ChunkFlowViewerProps)
               </div>
               
               <ReactMarkdown 
-                remarkPlugins={[remarkGfm, addSourcePosPlugin]}
+                remarkPlugins={[remarkGfm, addBoundaryPositionsPlugin]}
                 components={{
                   h1: ({...props}: any) => <h1 className="text-2xl font-bold mt-4 mb-2 border-b pb-2 first:mt-0" {...props} />,
                   h2: ({...props}: any) => <h2 className="text-xl font-semibold mt-4 mb-2 border-b pb-2 first:mt-0" {...props} />,
@@ -332,6 +245,8 @@ export function ChunkFlowViewer({ chunks, onChunkUpdate }: ChunkFlowViewerProps)
                   className="absolute top-0 left-0 right-0 h-4 -translate-y-1/2 cursor-ns-resize flex items-center justify-center z-30 group/handle"
                   onMouseDown={(e) => {
                     e.preventDefault();
+                    hoverSplitInfoRef.current = null;
+                    setHoverSplitInfo(null);
                     setDraggingIndex(index);
                   }}
                 >
