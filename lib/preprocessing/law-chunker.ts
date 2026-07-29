@@ -31,7 +31,7 @@ interface HierarchyState {
   subsection: LocationEntry | null;
 }
 
-interface ParsedLegalHeading {
+export interface ParsedLegalHeading {
   kind: HierarchyKind | 'article' | 'addendum' | 'appendix' | 'form';
   heading: string;
   inlineBody: string;
@@ -97,7 +97,7 @@ function hasExplicitMarkdownHeadingSyntax(line: string): boolean {
     /^(?:\*\*.*\*\*|__.*__|~~.*~~|`.*`)$/u.test(value);
 }
 
-function parseLegalHeading(line: string): ParsedLegalHeading | null {
+export function parseLegalHeading(line: string): ParsedLegalHeading | null {
   const trimmed = stripMarkdownHeading(line);
   if (!trimmed) return null;
 
