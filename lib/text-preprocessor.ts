@@ -234,6 +234,60 @@ function chunkStructuredText(
   return chunks;
 }
 
+/**
+ * 구조 시작 줄을 청크 경계로만 사용한다. 줄 전체를 반복 제목으로 취급하지 않는다.
+ */
+function chunkTextAtStructureBoundaries(
+  text: string,
+  isBoundary: (line: string) => boolean,
+  maxChunkSize: number = 4000,
+  splitText: TextSplitter = chunkText
+): string[] {
+  const blocks: string[] = [];
+  let blockLines: string[] = [];
+
+  const flushBlock = () => {
+    const block = blockLines.join('\n').trim();
+    if (block) blocks.push(block);
+    blockLines = [];
+  };
+
+  for (const line of text.split('\n')) {
+    if (isBoundary(line) && blockLines.some((blockLine) => blockLine.trim())) {
+      flushBlock();
+    }
+    blockLines.push(line);
+  }
+  flushBlock();
+
+  const chunks: string[] = [];
+  let mergeBuffer = '';
+
+  const flushMergeBuffer = () => {
+    if (mergeBuffer) chunks.push(mergeBuffer);
+    mergeBuffer = '';
+  };
+
+  for (const block of blocks) {
+    if (block.length > maxChunkSize) {
+      flushMergeBuffer();
+      chunks.push(...splitText(block, maxChunkSize));
+      continue;
+    }
+
+    const nextValue = mergeBuffer ? `${mergeBuffer}\n\n${block}` : block;
+    if (nextValue.length <= maxChunkSize) {
+      mergeBuffer = nextValue;
+    } else {
+      flushMergeBuffer();
+      mergeBuffer = block;
+    }
+  }
+
+  flushMergeBuffer();
+  return chunks;
+}
+
 function isManualHeading(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length > 100) return false;
@@ -267,14 +321,14 @@ function chunkManual(text: string, maxChunkSize: number = 4000): string[] {
 }
 
 /**
- * 법령, 계약조건, 사규 등에서 독립된 구조 제목으로 쓰이는 줄을 감지한다.
+ * 법령, 계약조건, 사규 등에서 새 구조 단위가 시작되는 줄을 감지한다.
  * DOCX 목록 번호가 앞에 붙은 "1.1.70. 제1조(목적)" 형태도 허용한다.
  */
-function isLegalStructureHeading(line: string): boolean {
+function isLegalStructureStart(line: string): boolean {
   const trimmed = line.trim();
-  if (!trimmed || trimmed.length > 120) return false;
+  if (!trimmed) return false;
 
-  return /^(?:(?:\d+\.)+\s*)?(?:제\s*\d+(?:\s*의\s*\d+)?\s*(?:편|장|절|관|조)(?=\s|$|\()|부칙(?=\s|$|\()|별표(?:\s|$|\d)|별지(?:\s|$|\d))/.test(trimmed);
+  return /^(?:(?:\d+\.)+\s*)?(?:제\s*\d+\s*(?:(?:편|장|절|관)(?=\s|$|\()|조(?:\s*의\s*\d+)?(?=\s|$|\())|부칙(?=\s|$|\()|별표(?:\s|$|\d)|별지(?:\s|$|\d))/.test(trimmed);
 }
 
 /**
@@ -282,13 +336,13 @@ function isLegalStructureHeading(line: string): boolean {
  * 구조가 없는 보고서나 일반 텍스트는 기존 문단/표 기반 청킹을 유지한다.
  */
 function chunkGeneral(text: string, maxChunkSize: number = 4000): string[] {
-  if (!text.split('\n').some(isLegalStructureHeading)) {
+  if (!text.split('\n').some(isLegalStructureStart)) {
     return chunkMarkdownWithTables(text, maxChunkSize, 0);
   }
 
-  return chunkStructuredText(
+  return chunkTextAtStructureBoundaries(
     text,
-    isLegalStructureHeading,
+    isLegalStructureStart,
     maxChunkSize,
     (content, size) => chunkMarkdownWithTables(content, size, 0)
   );
@@ -300,12 +354,17 @@ function chunkGeneral(text: string, maxChunkSize: number = 4000): string[] {
  * - 구조가 없으면 일반 청킹으로 fallback
  */
 function chunkLawStructure(text: string, maxChunkSize: number = 4000): string[] {
-  if (!text.split('\n').some(isLegalStructureHeading)) {
+  if (!text.split('\n').some(isLegalStructureStart)) {
     // 법령 구조가 아니면 일반 청킹 사용
     return chunkText(text, maxChunkSize);
   }
 
-  return chunkStructuredText(text, isLegalStructureHeading, maxChunkSize, chunkText);
+  return chunkTextAtStructureBoundaries(
+    text,
+    isLegalStructureStart,
+    maxChunkSize,
+    chunkText
+  );
 }
 
 const DELEGATION_MANUAL_TITLE = '[위임전결규정 매뉴얼]';
