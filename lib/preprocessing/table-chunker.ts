@@ -28,12 +28,20 @@ function warning(
   };
 }
 
+function framingError(message: string): PreprocessIssue {
+  return { code: 'TABLE_FRAMING_EXCEEDS_LIMIT', severity: 'error', message };
+}
+
+function normalizeCellLineEndings(value: string): string {
+  return value.replace(/\r\n?/g, '\n');
+}
+
 /** Escapes a cell without changing quotes, commas, or meaningful whitespace. */
 export function escapeMarkdownCell(value: string): string {
-  return value
+  return normalizeCellLineEndings(value)
     .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|')
-    .replace(/\r?\n/g, '<br>');
+    .replace(/\n/g, '<br>');
 }
 
 function isEmptyRow(row: IndexedRow): boolean {
@@ -63,20 +71,15 @@ function renderTableStart(header: string[]): string {
   return `${renderRow(header)}\n| ${header.map(() => '---').join(' | ')} |`;
 }
 
-function maxBodyLength(contextLines: string[], tableStart: string): number {
-  const contextLength = contextLines.length === 0
+function contextPrefixLength(contextLines: string[]): number {
+  return contextLines.length === 0
     ? 0
     : contextLines.join('\n').length + 1;
-  return APP_CHUNK_LIMIT - contextLength - tableStart.length;
 }
 
-function rowIdentifier(row: IndexedRow): string {
-  return row.cells.find((cell) => cell.trim().length > 0)?.trim() || `row ${row.index + 1}`;
-}
-
-function fragmentLinePrefix(row: IndexedRow, columnIndex: number, header: string[]): string {
+function fragmentLinePrefix(columnIndex: number, header: string[]): string {
   const label = header[columnIndex]?.trim() || `column ${columnIndex + 1}`;
-  return `행 분할: ${rowIdentifier(row)} | ${escapeMarkdownCell(label)}: `;
+  return `행 분할: ${escapeMarkdownCell(label)}: `;
 }
 
 function splitOversizedCell(value: string, availableLength: number): string[] {
@@ -84,20 +87,25 @@ function splitOversizedCell(value: string, availableLength: number): string[] {
 
   // A line break expands to four characters (<br>), the largest escaping expansion.
   const safeSourceLength = Math.max(1, Math.floor(availableLength / 4));
-  return splitTextPreservingSeparators(value, safeSourceLength)
+  return splitTextPreservingSeparators(normalizeCellLineEndings(value), safeSourceLength)
     .map(escapeMarkdownCell);
 }
 
 function renderRowFragments(row: IndexedRow, header: string[], bodyLimit: number): string[] {
   const fragments: string[] = [];
+  const identifierIndex = row.cells.findIndex((cell) => cell.trim().length > 0);
+  if (identifierIndex >= 0) {
+    fragments.push(`행 분할: ${escapeMarkdownCell(row.cells[identifierIndex])}`);
+  }
   row.cells.forEach((cell, columnIndex) => {
-    const prefix = fragmentLinePrefix(row, columnIndex, header);
+    if (columnIndex === identifierIndex) return;
+    const prefix = fragmentLinePrefix(columnIndex, header);
     const valueLimit = Math.max(1, bodyLimit - prefix.length);
     for (const valueFragment of splitOversizedCell(cell, valueLimit)) {
       fragments.push(`${prefix}${valueFragment}`);
     }
   });
-  return fragments.length > 0 ? fragments : [`행 분할: ${rowIdentifier(row)}`];
+  return fragments.length > 0 ? fragments : ['행 분할'];
 }
 
 /**
@@ -142,6 +150,7 @@ export function chunkTableBlock(block: DocumentBlock, contextLines: string[]): C
   }
 
   const drafts: ChunkDraft[] = [];
+  const contextLength = contextPrefixLength(contextLines);
   let sourceConsumed = false;
   const pushDraft = (body: string): void => {
     drafts.push({
@@ -153,13 +162,21 @@ export function chunkTableBlock(block: DocumentBlock, contextLines: string[]): C
     sourceConsumed = true;
   };
 
+  const blockedOutput = (message: string): ChunkingOutput => ({
+    drafts: [],
+    expectedSourceBlockIds: [],
+    warnings: [...warnings, framingError(message)],
+  });
+
   for (const region of regions) {
-    const headerIndex = region.findIndex((row) => !isEmptyRow(row));
-    if (headerIndex < 0) continue;
-    const header = region[headerIndex].cells;
+    const header = region[0].cells;
     const tableStart = renderTableStart(header);
-    const bodyLimit = maxBodyLength(contextLines, tableStart);
-    const dataRows = region.slice(headerIndex + 1);
+    const bodyLimit = APP_CHUNK_LIMIT - contextLength - tableStart.length;
+    const dataRows = region.slice(1);
+
+    if (bodyLimit < 0 || (dataRows.length > 0 && bodyLimit < 2)) {
+      return blockedOutput('Context and the complete repeated table header cannot fit with table body content.');
+    }
 
     if (dataRows.length === 0) {
       pushDraft(tableStart);
@@ -177,7 +194,7 @@ export function chunkTableBlock(block: DocumentBlock, contextLines: string[]): C
     for (const row of dataRows) {
       const renderedRow = renderRow(row.cells);
       if (bodyLimit > 0 && renderedRow.length + 1 <= bodyLimit) {
-        if (body.length + renderedRow.length + 1 <= APP_CHUNK_LIMIT - (contextLines.length === 0 ? 0 : contextLines.join('\n').length + 1)) {
+        if (body.length + renderedRow.length + 1 <= APP_CHUNK_LIMIT - contextLength) {
           body += `\n${renderedRow}`;
           hasData = true;
           continue;
@@ -190,7 +207,10 @@ export function chunkTableBlock(block: DocumentBlock, contextLines: string[]): C
 
       flush();
       for (const fragment of renderRowFragments(row, header, Math.max(1, bodyLimit - 1))) {
-        if (body.length + fragment.length + 1 > APP_CHUNK_LIMIT - (contextLines.length === 0 ? 0 : contextLines.join('\n').length + 1) && hasData) {
+        if (fragment.length + 1 > bodyLimit) {
+          return blockedOutput('Context and the complete repeated table header leave insufficient space for a table row fragment.');
+        }
+        if (body.length + fragment.length + 1 > APP_CHUNK_LIMIT - contextLength && hasData) {
           flush();
         }
         body += `\n${fragment}`;
