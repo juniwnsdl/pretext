@@ -1,63 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  normalizeDocType,
-  preprocessByDocType,
-} from '@/lib/text-preprocessor';
+
+import { normalizePreprocessRequest } from '@/lib/preprocess-request';
+import { preprocessExtractedDocument } from '@/lib/text-preprocessor';
+
+function errorResponse(code: string, message: string, status: 400 | 500) {
+  return NextResponse.json(
+    { success: false, error: { code, message } },
+    { status },
+  );
+}
 
 export async function POST(request: NextRequest) {
   try {
-    // JSON 데이터 파싱
-    const body = await request.json();
-    
-    // 텍스트 데이터 추출
-    const { text, docType, separator } = body as {
-      text?: string;
-      docType?: unknown;
-      separator?: string;
-    };
-    
-    // 입력 검증
-    if (!text || typeof text !== 'string') {
-      return NextResponse.json(
-        { error: '유효한 텍스트 데이터가 필요합니다.' },
-        { status: 400 }
-      );
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return errorResponse('INVALID_REQUEST', 'Request body must be valid JSON.', 400);
+      }
+      throw error;
     }
-    
-    if (text.trim().length === 0) {
-      return NextResponse.json(
-        { error: '빈 텍스트는 처리할 수 없습니다.' },
-        { status: 400 }
-      );
+
+    const normalized = normalizePreprocessRequest(body);
+    if (!normalized.ok) {
+      return errorResponse(normalized.error.code, normalized.error.message, 400);
     }
-    
-    const effectiveDocType = normalizeDocType(docType);
-    
-    // 구분자 기본값 설정
-    const effectiveSeparator = separator || '@@@';
-    
-    // 전처리 실행
-    const result = preprocessByDocType(text, effectiveDocType, effectiveSeparator);
-    
-    // 결과 반환
-    return NextResponse.json({
-      success: true,
-      data: {
-        processedText: result.processedText,
-        chunks: result.chunks,
-        stats: result.stats,
-      },
-    });
-    
+
+    const result = preprocessExtractedDocument(
+      normalized.value.document,
+      normalized.value.docType,
+    );
+
+    return NextResponse.json({ success: true, data: result }, { status: 200 });
   } catch (error) {
-    console.error('[v0] Preprocessing error:', error);
-    
-    return NextResponse.json(
-      { 
-        error: '텍스트 전처리 중 오류가 발생했습니다.',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
+    console.error('[preprocess] Unexpected preprocessing error:', error);
+    return errorResponse(
+      'PREPROCESSING_FAILED',
+      error instanceof Error ? error.message : String(error),
+      500,
     );
   }
 }

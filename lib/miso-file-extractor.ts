@@ -21,7 +21,9 @@ interface DocxExtractionAdapters {
 }
 
 interface ApiBody {
+  success?: unknown;
   error?: unknown;
+  message?: unknown;
   fileId?: unknown;
   fileName?: unknown;
   data?: {
@@ -34,10 +36,33 @@ function sourceFormat(fileName: string): string {
   return match?.[1]?.toLowerCase() || 'unknown';
 }
 
+function envelopeMessage(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim().length > 0) return value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const envelope = value as Record<string, unknown>;
+  return envelopeMessage(envelope.message)
+    ?? envelopeMessage(envelope.error)
+    ?? envelopeMessage(envelope.details);
+}
+
+async function readApiBody(response: Response): Promise<ApiBody> {
+  if (typeof response.text === 'function') {
+    const rawBody = await response.text();
+    if (!rawBody.trim()) return {};
+    try {
+      const parsed = JSON.parse(rawBody) as unknown;
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? parsed as ApiBody
+        : { error: parsed };
+    } catch {
+      return { error: rawBody };
+    }
+  }
+  return await response.json() as ApiBody;
+}
+
 function apiMessage(body: ApiBody, fallback: string): string {
-  return typeof body.error === 'string' && body.error.length > 0
-    ? body.error
-    : fallback;
+  return envelopeMessage(body.error) ?? envelopeMessage(body.message) ?? fallback;
 }
 
 function errorMessage(error: unknown): string {
@@ -55,8 +80,11 @@ export async function extractTextViaMiso(
     method: 'POST',
     body: uploadBody,
   });
-  const uploadResult = await uploadResponse.json() as ApiBody;
-  if (!uploadResponse.ok) throw new Error(apiMessage(uploadResult, 'File upload failed.'));
+  const uploadResult = await readApiBody(uploadResponse);
+  const uploadError = envelopeMessage(uploadResult.error);
+  if (!uploadResponse.ok || uploadResult.success === false || uploadError) {
+    throw new Error(uploadError ?? apiMessage(uploadResult, 'File upload failed.'));
+  }
 
   const workflowResponse = await fetchImpl('/api/miso', {
     method: 'POST',
@@ -66,9 +94,10 @@ export async function extractTextViaMiso(
       fileName: uploadResult.fileName,
     }),
   });
-  const workflowResult = await workflowResponse.json() as ApiBody;
-  if (!workflowResponse.ok) {
-    throw new Error(apiMessage(workflowResult, 'File extraction failed.'));
+  const workflowResult = await readApiBody(workflowResponse);
+  const workflowError = envelopeMessage(workflowResult.error);
+  if (!workflowResponse.ok || workflowResult.success === false || workflowError) {
+    throw new Error(workflowError ?? apiMessage(workflowResult, 'File extraction failed.'));
   }
   const text = workflowResult.data?.result;
   if (typeof text !== 'string' || text.trim().length === 0) {

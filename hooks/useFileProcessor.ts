@@ -1,19 +1,38 @@
-import { useState, useCallback } from 'react';
-import type { DocType } from '@/lib/text-preprocessor';
+import { useCallback, useRef, useState } from 'react';
+
 import {
   getFileExtension,
   getFileProcessingRoute,
   isFileSizeAllowed,
 } from '@/lib/file-processing-policy';
+import {
+  extractDocxPreferLocal,
+  extractTextViaMiso,
+} from '@/lib/miso-file-extractor';
+import {
+  MISO_SEPARATOR,
+  type DocumentBlock,
+  type ExtractedDocument,
+  type PreprocessIssue,
+  type PreprocessResult,
+} from '@/lib/preprocessing/contracts';
+import { revalidateEditedChunks } from '@/lib/preprocessing/core';
+import {
+  decodeTextBuffer,
+  type DecodedText,
+} from '@/lib/text-file-decoder';
+import type { DocType } from '@/lib/text-preprocessor';
 
-export interface ProcessStats {
-  originalLength: number;
-  processedLength: number;
-  chunkCount: number;
-}
+export type ProcessStats = PreprocessResult['stats'];
+export type ProcessorStatus =
+  | 'idle'
+  | 'reading'
+  | 'uploading'
+  | 'processing'
+  | 'complete'
+  | 'error';
 
 export interface UseFileProcessorReturn {
-  // States
   file: File | null;
   inputText: string;
   processedText: string;
@@ -22,9 +41,13 @@ export interface UseFileProcessorReturn {
   separator: string;
   stats: ProcessStats | null;
   error: string | null;
-  status: 'idle' | 'reading' | 'uploading' | 'processing' | 'complete' | 'error';
-  
-  // Actions
+  status: ProcessorStatus;
+  sourceDocument: ExtractedDocument | null;
+  result: PreprocessResult | null;
+  textEncoding: 'utf-8' | 'euc-kr' | null;
+  encodingReviewRequired: boolean;
+  extractionIssues: PreprocessIssue[];
+
   setFile: (file: File | null) => void;
   setInputText: (text: string) => void;
   setDocType: (type: DocType) => void;
@@ -32,153 +55,477 @@ export interface UseFileProcessorReturn {
   setProcessedText: (text: string) => void;
   updateChunks: (chunks: string[]) => void;
   reset: () => void;
-  
-  // Async Actions
+
   handleFileRead: (file: File) => Promise<void>;
   processText: () => Promise<void>;
+  redecodeText: (encoding: 'utf-8' | 'euc-kr') => Promise<void>;
+}
+
+interface RetainedTextFile {
+  buffer: ArrayBuffer;
+  fileName: string;
+  format: 'txt' | 'csv';
+}
+
+interface ApplyExtractionOptions {
+  encoding?: 'utf-8' | 'euc-kr' | null;
+  encodingReviewRequired?: boolean;
+}
+
+interface PreprocessApiResponse {
+  success?: boolean;
+  data?: PreprocessResult;
+  error?: string | { message?: unknown };
+}
+
+const STRUCTURE_DISCARDED_ISSUE: PreprocessIssue = {
+  code: 'STRUCTURE_DISCARDED_AFTER_EDIT',
+  severity: 'warning',
+  message: 'Manual editing replaced the extracted structure with raw text.',
+};
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : String(error || fallback);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function abortError(): Error {
+  const error = new Error('File processing was cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function escapeMarkdownCell(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('|', '\\|')
+    .replace(/\r\n?|\n/gu, '<br>');
+}
+
+function renderTablePreview(block: DocumentBlock): string {
+  const rows = block.rows ?? [];
+  const width = rows.reduce((largest, row) => Math.max(largest, row.length), 0);
+  if (width === 0) return '';
+  const normalizedRows = rows.map((row) => Array.from(
+    { length: width },
+    (_, column) => escapeMarkdownCell(row[column] ?? ''),
+  ));
+  const header = normalizedRows[0] ?? Array.from({ length: width }, () => '');
+  const body = normalizedRows.slice(1);
+  const table = [
+    `| ${header.join(' | ')} |`,
+    `| ${header.map(() => '---').join(' | ')} |`,
+    ...body.map((row) => `| ${row.join(' | ')} |`),
+  ].join('\n');
+  const title = block.sheetName ?? block.headingPath.at(-1);
+  return title ? `## ${title}\n\n${table}` : table;
+}
+
+/** Renders an editable preview while leaving the source blocks untouched. */
+function renderDocumentPreview(document: ExtractedDocument): string {
+  return [...document.blocks]
+    .sort((left, right) => left.order - right.order)
+    .map((block) => {
+      if (block.kind === 'table') return renderTablePreview(block);
+      if (block.kind === 'heading') {
+        return `${'#'.repeat(block.level ?? 2)} ${block.text ?? ''}`;
+      }
+      if (block.kind === 'list-item') {
+        const indentation = '  '.repeat(Math.max(0, block.depth ?? 0));
+        return `${indentation}${block.ordered ? '1.' : '-'} ${block.text ?? ''}`;
+      }
+      return block.text ?? '';
+    })
+    .filter((preview) => preview.length > 0)
+    .join('\n\n');
+}
+
+function rawTextDocument(
+  fileName: string,
+  sourceFormat: string,
+  text: string,
+  extractionMethod: ExtractedDocument['extractionMethod'],
+  warnings: PreprocessIssue[],
+): ExtractedDocument {
+  return {
+    version: 1,
+    fileName,
+    sourceFormat,
+    extractionMethod,
+    blocks: [{
+      id: extractionMethod === 'user-edited' ? 'user-edited-1' : 'raw-text-1',
+      kind: 'raw-text',
+      order: 0,
+      headingPath: [],
+      text,
+    }],
+    warnings,
+  };
+}
+
+function issueKey(issue: PreprocessIssue): string {
+  return JSON.stringify([
+    issue.code,
+    issue.severity,
+    issue.message,
+    issue.count ?? null,
+    issue.locations ?? null,
+  ]);
+}
+
+function uniqueIssues(issues: PreprocessIssue[]): PreprocessIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const key = issueKey(issue);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeResultIssues(
+  result: PreprocessResult,
+  additionalIssues: PreprocessIssue[],
+): PreprocessResult {
+  const issues = uniqueIssues([...result.issues, ...additionalIssues]);
+  const resultStatus = result.resultStatus === 'blocked'
+    || issues.some((issue) => issue.severity === 'error')
+    ? 'blocked'
+    : result.resultStatus === 'review' || issues.length > 0
+      ? 'review'
+      : 'ready';
+  return {
+    ...result,
+    issues,
+    resultStatus,
+    canDownload: result.canDownload && resultStatus !== 'blocked',
+  };
+}
+
+function documentSourceLength(document: ExtractedDocument | null, fallback: number): number {
+  if (!document) return fallback;
+  return document.blocks.reduce((total, block) => {
+    if (block.kind !== 'table') return total + (block.text?.length ?? 0);
+    return total + (block.rows ?? []).reduce(
+      (rowTotal, row) => rowTotal + row.reduce((cellTotal, cell) => cellTotal + cell.length, 0),
+      0,
+    );
+  }, 0);
+}
+
+function apiErrorMessage(payload: PreprocessApiResponse): string {
+  if (typeof payload.error === 'string' && payload.error.trim()) return payload.error;
+  if (
+    typeof payload.error === 'object'
+    && payload.error !== null
+    && typeof payload.error.message === 'string'
+    && payload.error.message.trim()
+  ) {
+    return payload.error.message;
+  }
+  return 'Preprocessing failed.';
+}
+
+function extractWorkbookInWorker(
+  buffer: ArrayBuffer,
+  fileName: string,
+  signal: AbortSignal,
+): Promise<ExtractedDocument> {
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('../workers/file.worker.ts', import.meta.url));
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    let settled = false;
+    const settle = (completion: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      worker.onmessage = null;
+      worker.onerror = null;
+      try {
+        worker.terminate();
+      } finally {
+        completion();
+      }
+    };
+    const onAbort = (): void => settle(() => reject(abortError()));
+
+    worker.onmessage = (event: MessageEvent<{
+      status?: unknown;
+      document?: unknown;
+      error?: unknown;
+    }>) => {
+      if (event.data?.status === 'success' && event.data.document) {
+        settle(() => resolve(event.data.document as ExtractedDocument));
+        return;
+      }
+      const message = typeof event.data?.error === 'string'
+        ? event.data.error
+        : String(event.data?.error ?? 'Excel worker returned an invalid response.');
+      settle(() => reject(new Error(message)));
+    };
+    worker.onerror = (event: ErrorEvent) => {
+      event.preventDefault?.();
+      settle(() => reject(new Error(event.message || 'Excel worker failed.')));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    try {
+      worker.postMessage({ type: 'excel', fileName, buffer }, [buffer]);
+    } catch (error) {
+      settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+    }
+  });
 }
 
 export function useFileProcessor(): UseFileProcessorReturn {
-  // State Definitions
   const [file, setFileState] = useState<File | null>(null);
-  const [inputText, setInputText] = useState('');
+  const [inputText, setInputTextState] = useState('');
   const [processedText, setProcessedText] = useState('');
   const [processedChunks, setProcessedChunks] = useState<string[]>([]);
   const [stats, setStats] = useState<ProcessStats | null>(null);
-  const [docType, setDocType] = useState<DocType>('general');
-  const [separator, setSeparator] = useState<string>('@@@');
+  const [docType, setDocTypeState] = useState<DocType>('general');
+  const [separator, setSeparatorState] = useState<string>(MISO_SEPARATOR);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<'idle' | 'reading' | 'uploading' | 'processing' | 'complete' | 'error'>('idle');
+  const [status, setStatus] = useState<ProcessorStatus>('idle');
+  const [sourceDocument, setSourceDocument] = useState<ExtractedDocument | null>(null);
+  const [result, setResult] = useState<PreprocessResult | null>(null);
+  const [textEncoding, setTextEncoding] = useState<'utf-8' | 'euc-kr' | null>(null);
+  const [encodingReviewRequired, setEncodingReviewRequired] = useState(false);
+  const [extractionIssues, setExtractionIssues] = useState<PreprocessIssue[]>([]);
+
+  const sourceDocumentRef = useRef<ExtractedDocument | null>(null);
+  const textFileRef = useRef<RetainedTextFile | null>(null);
+  const fileOperationRef = useRef(0);
+  const fileAbortRef = useRef<AbortController | null>(null);
+  const processOperationRef = useRef(0);
+  const processAbortRef = useRef<AbortController | null>(null);
+
+  const clearResult = useCallback(() => {
+    setResult(null);
+    setProcessedText('');
+    setProcessedChunks([]);
+    setStats(null);
+  }, []);
+
+  const applyExtraction = useCallback((
+    document: ExtractedDocument,
+    options: ApplyExtractionOptions = {},
+  ): void => {
+    sourceDocumentRef.current = document;
+    setSourceDocument(document);
+    setInputTextState(renderDocumentPreview(document));
+    setExtractionIssues(document.warnings);
+    setTextEncoding(options.encoding ?? null);
+    setEncodingReviewRequired(options.encodingReviewRequired ?? false);
+    clearResult();
+  }, [clearResult]);
+
+  const cancelPendingWork = useCallback(() => {
+    fileOperationRef.current += 1;
+    fileAbortRef.current?.abort();
+    fileAbortRef.current = null;
+    processOperationRef.current += 1;
+    processAbortRef.current?.abort();
+    processAbortRef.current = null;
+  }, []);
 
   const setFile = useCallback((newFile: File | null) => {
+    cancelPendingWork();
     setFileState(newFile);
-    if (!newFile) {
-      setError(null);
-    }
+    setError(null);
+    setStatus('idle');
+  }, [cancelPendingWork]);
+
+  const setDocType = useCallback((nextDocType: DocType) => {
+    processOperationRef.current += 1;
+    processAbortRef.current?.abort();
+    processAbortRef.current = null;
+    setDocTypeState(nextDocType);
+    clearResult();
+    setError(null);
+    setStatus('idle');
+  }, [clearResult]);
+
+  const setSeparator = useCallback((_nextSeparator: string) => {
+    setSeparatorState(MISO_SEPARATOR);
   }, []);
 
   const reset = useCallback(() => {
+    cancelPendingWork();
+    textFileRef.current = null;
+    sourceDocumentRef.current = null;
     setFileState(null);
-    setInputText('');
+    setInputTextState('');
     setProcessedText('');
     setProcessedChunks([]);
     setStats(null);
     setError(null);
     setStatus('idle');
-    setDocType('general');
-    setSeparator('@@@');
-  }, []);
+    setDocTypeState('general');
+    setSeparatorState(MISO_SEPARATOR);
+    setSourceDocument(null);
+    setResult(null);
+    setTextEncoding(null);
+    setEncodingReviewRequired(false);
+    setExtractionIssues([]);
+  }, [cancelPendingWork]);
 
-  // 1. File Reading Logic
+  const setInputText = useCallback((text: string) => {
+    cancelPendingWork();
+    const currentDocument = sourceDocumentRef.current;
+    const warnings = uniqueIssues([
+      ...(currentDocument?.warnings ?? []),
+      STRUCTURE_DISCARDED_ISSUE,
+    ]);
+    const editedDocument = rawTextDocument(
+      currentDocument?.fileName ?? file?.name ?? 'document.txt',
+      currentDocument?.sourceFormat ?? (getFileExtension(file?.name ?? '') || 'txt'),
+      text,
+      'user-edited',
+      warnings,
+    );
+    sourceDocumentRef.current = editedDocument;
+    setSourceDocument(editedDocument);
+    setInputTextState(text);
+    setExtractionIssues(warnings);
+    setEncodingReviewRequired(false);
+    clearResult();
+    setError(null);
+    setStatus('idle');
+  }, [cancelPendingWork, clearResult, file]);
+
   const handleFileRead = useCallback(async (selectedFile: File) => {
+    fileOperationRef.current += 1;
+    const operationId = fileOperationRef.current;
+    fileAbortRef.current?.abort();
+    const controller = new AbortController();
+    fileAbortRef.current = controller;
+    processOperationRef.current += 1;
+    processAbortRef.current?.abort();
+    processAbortRef.current = null;
+
     if (!isFileSizeAllowed(selectedFile.size)) {
-      setError('파일 용량이 50MB를 초과했습니다.');
+      setError('File size exceeds the 50 MB limit.');
+      setStatus('error');
       return;
     }
 
     const processingRoute = getFileProcessingRoute(selectedFile.name);
     if (processingRoute === 'unsupported') {
-      setFile(selectedFile);
-      setError('지원하지 않는 파일 형식입니다. PDF, DOCX 또는 TXT 등 지원 형식으로 변환해주세요.');
+      setFileState(selectedFile);
+      setError('Unsupported file format. Convert it to a supported document or text format.');
       setStatus('error');
       return;
     }
 
-    setFile(selectedFile);
-    setStatus('reading');
+    setFileState(selectedFile);
+    setStatus(processingRoute === 'miso' ? 'uploading' : 'reading');
     setError(null);
-
+    textFileRef.current = null;
     const fileExtension = getFileExtension(selectedFile.name);
 
     try {
-      // 1-1. Text Files
+      let document: ExtractedDocument;
+      let decoded: DecodedText | null = null;
+
       if (processingRoute === 'local-text') {
-        const text = await selectedFile.text();
-        setInputText(text);
-        
-        setDocType(fileExtension === 'csv' ? 'excel' : 'general');
-        
-        setStatus('idle');
-        return;
+        const buffer = await selectedFile.arrayBuffer();
+        if (controller.signal.aborted) throw abortError();
+        const format = fileExtension === 'csv' ? 'csv' : 'txt';
+        decoded = decodeTextBuffer(buffer, { choice: 'auto', format });
+        textFileRef.current = { buffer, fileName: selectedFile.name, format };
+        document = rawTextDocument(
+          selectedFile.name,
+          fileExtension || 'txt',
+          decoded.text,
+          'local-text',
+          decoded.warnings,
+        );
+        if (format === 'csv') setDocTypeState('excel');
+      } else if (processingRoute === 'local-excel') {
+        const buffer = await selectedFile.arrayBuffer();
+        if (controller.signal.aborted) throw abortError();
+        document = await extractWorkbookInWorker(buffer, selectedFile.name, controller.signal);
+        setDocTypeState('excel');
+      } else if (processingRoute === 'local-docx') {
+        document = await extractDocxPreferLocal(selectedFile);
+      } else {
+        document = await extractTextViaMiso(selectedFile);
       }
 
-      // 1-2. Excel Files (Processed via Web Worker)
-      if (processingRoute === 'local-excel') {
-        return new Promise<void>((resolve, reject) => {
-          const worker = new Worker(new URL('../workers/file.worker.ts', import.meta.url));
-          
-          worker.onmessage = (e) => {
-            const { status, text, error } = e.data;
-            if (status === 'success') {
-              setInputText(text);
-              setDocType('excel');
-              setStatus('idle');
-              worker.terminate(); // 작업 완료 후 종료
-              resolve();
-            } else {
-              const errMsg = error || '엑셀 처리 중 오류 발생';
-              setError(errMsg);
-              setStatus('error');
-              worker.terminate();
-              // reject(new Error(errMsg)); // UI상 에러 처리는 setError로 하므로 굳이 reject 안해도 됨
-            }
-          };
-
-          worker.onerror = (err) => {
-            console.error('Worker error:', err);
-            setError('엑셀 처리 워커 오류');
-            setStatus('error');
-            worker.terminate();
-          };
-
-          worker.postMessage({ file: selectedFile, type: 'excel' });
-        });
-      }
-
-      // 1-3. Others (Miso API)
-      setStatus('uploading');
-      
-      const uploadFormData = new FormData();
-      uploadFormData.append('file', selectedFile);
-
-      const uploadResponse = await fetch('/api/miso/upload', {
-        method: 'POST',
-        body: uploadFormData,
+      if (operationId !== fileOperationRef.current || controller.signal.aborted) return;
+      applyExtraction(document, {
+        encoding: decoded?.encoding ?? null,
+        encodingReviewRequired: decoded?.reviewRequired ?? false,
       });
-
-      const uploadResult = await uploadResponse.json();
-      if (!uploadResponse.ok) throw new Error(uploadResult.error || '업로드 실패');
-
-      const workflowResponse = await fetch('/api/miso', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          fileId: uploadResult.fileId,
-          fileName: uploadResult.fileName 
-        }),
-      });
-
-      const workflowResult = await workflowResponse.json();
-      if (!workflowResponse.ok) throw new Error(workflowResult.error || '처리 실패');
-
-      setInputText(workflowResult.data.result);
-      setDocType('general');
       setStatus('idle');
-
-    } catch (err) {
-      console.error('File processing error:', err);
-      setError(err instanceof Error ? err.message : '파일 처리 중 오류가 발생했습니다.');
+    } catch (caught) {
+      if (operationId !== fileOperationRef.current || isAbortError(caught)) return;
+      console.error('File processing error:', caught);
+      setError(errorMessage(caught, 'File processing failed.'));
       setStatus('error');
+    } finally {
+      if (fileAbortRef.current === controller) fileAbortRef.current = null;
     }
-  }, [setFile]);
+  }, [applyExtraction]);
 
-  // 2. Preprocessing Logic
-  const processText = useCallback(async () => {
-    if (!inputText.trim()) {
-      setError('처리할 텍스트가 없습니다.');
+  const redecodeText = useCallback(async (encoding: 'utf-8' | 'euc-kr') => {
+    const retained = textFileRef.current;
+    if (!retained) {
+      setError('No retained text buffer is available for decoding.');
+      setStatus('error');
       return;
     }
 
+    try {
+      const decoded = decodeTextBuffer(retained.buffer, {
+        choice: encoding,
+        format: retained.format,
+      });
+      const document = rawTextDocument(
+        retained.fileName,
+        retained.format,
+        decoded.text,
+        'local-text',
+        decoded.warnings,
+      );
+      applyExtraction(document, {
+        encoding: decoded.encoding,
+        encodingReviewRequired: decoded.reviewRequired,
+      });
+      setError(null);
+      setStatus('idle');
+    } catch (caught) {
+      setError(errorMessage(caught, 'Text decoding failed.'));
+      setStatus('error');
+    }
+  }, [applyExtraction]);
+
+  const processText = useCallback(async () => {
+    const document = sourceDocumentRef.current;
+    if (!document || !inputText.trim()) {
+      setError('There is no document content to preprocess.');
+      return;
+    }
+
+    processOperationRef.current += 1;
+    const operationId = processOperationRef.current;
+    processAbortRef.current?.abort();
+    const controller = new AbortController();
+    processAbortRef.current = controller;
     setStatus('processing');
     setError(null);
 
@@ -187,41 +534,48 @@ export function useFileProcessor(): UseFileProcessorReturn {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: inputText,
+          document,
           docType,
-          separator,
+          separator: MISO_SEPARATOR,
         }),
+        signal: controller.signal,
       });
+      const payload = await response.json() as PreprocessApiResponse;
+      if (!response.ok || payload.success !== true || !payload.data) {
+        throw new Error(apiErrorMessage(payload));
+      }
+      if (operationId !== processOperationRef.current || controller.signal.aborted) return;
 
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
-
-      setProcessedText(result.data.processedText);
-      setProcessedChunks(result.data.chunks || []);
-      setStats(result.data.stats);
+      const mergedResult = mergeResultIssues(payload.data, extractionIssues);
+      setResult(mergedResult);
+      setProcessedText(mergedResult.processedText);
+      setProcessedChunks(mergedResult.chunks);
+      setStats(mergedResult.stats);
       setStatus('complete');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '전처리 중 오류가 발생했습니다.');
+    } catch (caught) {
+      if (operationId !== processOperationRef.current || isAbortError(caught)) return;
+      setError(errorMessage(caught, 'Preprocessing failed.'));
       setStatus('error');
+    } finally {
+      if (processAbortRef.current === controller) processAbortRef.current = null;
     }
-  }, [inputText, docType, separator]);
+  }, [docType, extractionIssues, inputText]);
 
-  // 청크 수동 업데이트
   const updateChunks = useCallback((newChunks: string[]) => {
-    setProcessedChunks(newChunks);
-    // 구분자 앞뒤로 줄바꿈을 추가하여 독립적인 줄에 위치하도록 함
-    const newProcessedText = newChunks.join(`\n\n${separator}\n\n`);
-    setProcessedText(newProcessedText);
-    
-    // 통계 업데이트
-    if (stats) {
-      setStats({
-        ...stats,
-        processedLength: newProcessedText.length,
-        chunkCount: newChunks.length
-      });
-    }
-  }, [separator, stats]);
+    const originalLength = result?.stats.originalLength
+      ?? documentSourceLength(sourceDocumentRef.current, inputText.length);
+    const validated = revalidateEditedChunks(newChunks, originalLength);
+    const updatedResult = mergeResultIssues(validated, [
+      ...extractionIssues,
+      STRUCTURE_DISCARDED_ISSUE,
+    ]);
+    setResult(updatedResult);
+    setProcessedText(updatedResult.processedText);
+    setProcessedChunks(updatedResult.chunks);
+    setStats(updatedResult.stats);
+    setStatus('complete');
+    setError(null);
+  }, [extractionIssues, inputText.length, result?.stats.originalLength]);
 
   return {
     file,
@@ -233,6 +587,11 @@ export function useFileProcessor(): UseFileProcessorReturn {
     stats,
     error,
     status,
+    sourceDocument,
+    result,
+    textEncoding,
+    encodingReviewRequired,
+    extractionIssues,
     setFile,
     setInputText,
     setDocType,
@@ -242,6 +601,6 @@ export function useFileProcessor(): UseFileProcessorReturn {
     reset,
     handleFileRead,
     processText,
+    redecodeText,
   };
 }
-

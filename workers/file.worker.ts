@@ -17,6 +17,10 @@ interface UnsupportedWorkerRequest {
 
 type FileWorkerRequest = ExcelWorkerRequest | UnsupportedWorkerRequest;
 
+export function workerErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 self.onmessage = (event: MessageEvent<FileWorkerRequest>): void => {
   try {
     const request = event.data;
@@ -32,7 +36,7 @@ self.onmessage = (event: MessageEvent<FileWorkerRequest>): void => {
   } catch (error) {
     self.postMessage({
       status: 'error',
-      error: error instanceof Error ? error.message : 'Unknown worker error',
+      error: workerErrorMessage(error),
     });
   }
 };
