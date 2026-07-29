@@ -26,8 +26,12 @@ interface ParserLike {
   parseFromString(source: string, mimeType: string): Document;
 }
 
-const SKIPPED_ELEMENTS = new Set(['script', 'style', 'img']);
-const TEXT_BOUNDARY_ELEMENTS = new Set(['div', 'li', 'p']);
+const INLINE_TEXT_ELEMENTS = new Set([
+  'a', 'b', 'code', 'del', 'em', 'i', 's', 'span', 'strong', 'sub', 'sup', 'u',
+]);
+const TEXT_CONTAINER_ELEMENTS = new Set(['p']);
+const TEXT_BOUNDARY_ELEMENTS = new Set(['p']);
+const TABLE_SECTION_ELEMENTS = new Set(['thead', 'tbody', 'tfoot']);
 
 function sourceFormat(fileName: string): string {
   const match = /\.([^.]+)$/u.exec(fileName.trim());
@@ -44,10 +48,12 @@ function elementName(node: Node): string {
     : '';
 }
 
-function rawSafeText(node: Node, excluded: Set<string>): string {
+function rawSafeText(node: Node, excluded: Set<string>, root = false): string {
   const name = elementName(node);
-  if (SKIPPED_ELEMENTS.has(name) || excluded.has(name)) return '';
+  if (excluded.has(name)) return '';
   if (node.nodeType === 3 || node.nodeType === 4) return node.nodeValue ?? '';
+  if (name === 'br') return '\n';
+  if (!root && !INLINE_TEXT_ELEMENTS.has(name) && !TEXT_CONTAINER_ELEMENTS.has(name)) return '';
   return childNodes(node)
     .map((child) => {
       const text = rawSafeText(child, excluded);
@@ -57,8 +63,10 @@ function rawSafeText(node: Node, excluded: Set<string>): string {
 }
 
 function safeText(node: Node, excluded = new Set<string>()): string {
-  return rawSafeText(node, excluded)
-    .replace(/\s+/gu, ' ')
+  return rawSafeText(node, excluded, true)
+    .replace(/\r\n?/gu, '\n')
+    .replace(/[^\S\n]+/gu, ' ')
+    .replace(/ *\n */gu, '\n')
     .trim();
 }
 
@@ -73,13 +81,78 @@ function tableRows(table: Element): Element[] {
   const visit = (node: Node): void => {
     for (const child of childNodes(node)) {
       const name = elementName(child);
-      if (name === 'table') continue;
       if (name === 'tr') rows.push(child as Element);
-      else visit(child);
+      else if (TABLE_SECTION_ELEMENTS.has(name)) visit(child);
     }
   };
   visit(table);
   return rows;
+}
+
+function tableSpan(cell: Element, attribute: 'rowspan' | 'colspan'): number {
+  const value = Number.parseInt(cell.getAttribute(attribute) ?? '', 10);
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function columnLabel(column: number): string {
+  let value = column + 1;
+  let label = '';
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
+}
+
+function cellRange(startRow: number, startColumn: number, endRow: number, endColumn: number): string {
+  return `${columnLabel(startColumn)}${startRow + 1}:${columnLabel(endColumn)}${endRow + 1}`;
+}
+
+function structuredTable(table: Element): {
+  rows: string[][];
+  merges: NonNullable<DocumentBlock['merges']>;
+} {
+  const rows: Array<Array<string | undefined>> = [];
+  const merges: NonNullable<DocumentBlock['merges']> = [];
+
+  tableRows(table).forEach((row, rowIndex) => {
+    rows[rowIndex] ??= [];
+    let column = 0;
+    for (const cell of directChildren(row, new Set(['th', 'td']))) {
+      while (rows[rowIndex][column] !== undefined) column += 1;
+      const rowspan = tableSpan(cell, 'rowspan');
+      const colspan = tableSpan(cell, 'colspan');
+      const endRow = rowIndex + rowspan - 1;
+      const endColumn = column + colspan - 1;
+
+      for (let targetRow = rowIndex; targetRow <= endRow; targetRow += 1) {
+        rows[targetRow] ??= [];
+        for (let targetColumn = column; targetColumn <= endColumn; targetColumn += 1) {
+          if (targetRow === rowIndex && targetColumn === column) {
+            rows[targetRow][targetColumn] = safeText(cell, new Set(['table']));
+          } else if (rows[targetRow][targetColumn] === undefined) {
+            rows[targetRow][targetColumn] = '';
+          }
+        }
+      }
+
+      if (rowspan > 1 || colspan > 1) {
+        merges.push({
+          range: cellRange(rowIndex, column, endRow, endColumn),
+          start: { row: rowIndex, column },
+          end: { row: endRow, column: endColumn },
+        });
+      }
+      column = endColumn + 1;
+    }
+  });
+
+  const width = rows.reduce((maximum, row) => Math.max(maximum, row.length), 0);
+  return {
+    rows: rows.map((row) => Array.from({ length: width }, (_, column) => row[column] ?? '')),
+    merges,
+  };
 }
 
 function conversionWarnings(messages: MammothMessage[] | undefined): PreprocessIssue[] {
@@ -99,14 +172,26 @@ export function parseMammothHtml(
   fileName: string,
   parser?: ParserLike,
 ): { blocks: DocumentBlock[]; warnings: PreprocessIssue[] } {
+  const parserWarnings: string[] = [];
+  const parserErrors: string[] = [];
   const quietParser = parser ?? new DOMParser({
     errorHandler: {
-      warning: () => undefined,
-      error: () => undefined,
-      fatalError: () => undefined,
+      warning: (message) => parserWarnings.push(message),
+      error: (message) => parserErrors.push(message),
+      fatalError: (message) => parserErrors.push(message),
     },
   });
-  const document = quietParser.parseFromString(`<docx-root>${html}</docx-root>`, 'application/xml');
+  let document: Document;
+  try {
+    document = quietParser.parseFromString(`<docx-root>${html}</docx-root>`, 'application/xml');
+  } catch (error) {
+    throw new Error(
+      `DOCX parser failed for "${fileName}": ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (parserErrors.length > 0) {
+    throw new Error(`DOCX parser error for "${fileName}": ${parserErrors.join('; ')}`);
+  }
   const root = document.documentElement;
   if (!root) throw new Error(`DOCX extraction produced no usable content for "${fileName}".`);
 
@@ -144,8 +229,6 @@ export function parseMammothHtml(
   const walk = (node: Node): void => {
     for (const child of childNodes(node)) {
       const name = elementName(child);
-      if (SKIPPED_ELEMENTS.has(name)) continue;
-
       if (/^h[1-6]$/u.test(name)) {
         const level = Number(name.slice(1)) as 1 | 2 | 3 | 4 | 5 | 6;
         const text = safeText(child);
@@ -169,9 +252,7 @@ export function parseMammothHtml(
       }
 
       if (name === 'table') {
-        const rows = tableRows(child as Element)
-          .map((row) => directChildren(row, new Set(['th', 'td']))
-            .map((cell) => safeText(cell, new Set(['table']))));
+        const { rows, merges } = structuredTable(child as Element);
         if (rows.some((row) => row.some((cell) => cell.length > 0))) {
           tableCount += 1;
           append({
@@ -179,12 +260,11 @@ export function parseMammothHtml(
             headingPath: headingPath(),
             rows,
             tableId: `docx-table-${tableCount}`,
+            ...(merges.length > 0 ? { merges } : {}),
           });
         }
         continue;
       }
-
-      walk(child);
     }
   };
 
@@ -192,7 +272,14 @@ export function parseMammothHtml(
   if (blocks.length === 0) {
     throw new Error(`DOCX extraction produced no usable content for "${fileName}".`);
   }
-  return { blocks, warnings: [] };
+  return {
+    blocks,
+    warnings: parserWarnings.map((message) => ({
+      code: 'DOCX_PARSE_WARNING',
+      severity: 'warning',
+      message: `DOCX parser warning: ${message}`,
+    })),
+  };
 }
 
 async function defaultConverter(
