@@ -21,7 +21,7 @@ export const HELP_TABS: readonly HelpTab[] = [
   {
     id: 'understanding',
     label: '전처리 이해하기',
-    sectionIds: ['necessity', 'handling-guide', 'file-routing', 'support-scope'],
+    sectionIds: ['necessity', 'handling-guide'],
   },
   {
     id: 'usage',
@@ -29,6 +29,8 @@ export const HELP_TABS: readonly HelpTab[] = [
     sectionIds: [
       'tool-purpose',
       'steps',
+      'file-routing',
+      'support-scope',
       'document-types',
       'automatic-rules',
       'review-cautions',
