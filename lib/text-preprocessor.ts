@@ -14,6 +14,10 @@ import {
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './preprocessing/general-chunker.ts';
 import {
+  chunkWorkbookDocument,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './preprocessing/excel-chunker.ts';
+import {
   chunkDelegationManualDocument,
   chunkLawDocument,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
@@ -58,7 +62,9 @@ export function preprocessExtractedDocument(
   document: ExtractedDocument,
   docType: DocType,
 ): PreprocessResult {
-  const compatibilityOutput = chunkDelegationManualDocument(document);
+  const compatibilityOutput = docType === 'excel'
+    ? null
+    : chunkDelegationManualDocument(document);
   const output = compatibilityOutput ?? (() => {
     switch (docType) {
       case 'law':
@@ -66,6 +72,7 @@ export function preprocessExtractedDocument(
       case 'manual':
         return chunkManualDocument(document);
       case 'excel':
+        return chunkWorkbookDocument(document);
       case 'general':
       default:
         return chunkGeneralDocument(document);
