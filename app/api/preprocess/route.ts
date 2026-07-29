@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  DocType,
+  normalizeDocType,
   preprocessByDocType,
 } from '@/lib/text-preprocessor';
 
@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
     // 텍스트 데이터 추출
     const { text, docType, separator } = body as {
       text?: string;
-      docType?: DocType;
+      docType?: unknown;
       separator?: string;
     };
     
@@ -31,10 +31,7 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    const effectiveDocType: DocType =
-      docType && ['law', 'excel', 'research_paper', 'other'].includes(docType)
-        ? docType
-        : 'other';
+    const effectiveDocType = normalizeDocType(docType);
     
     // 구분자 기본값 설정
     const effectiveSeparator = separator || '@@@';

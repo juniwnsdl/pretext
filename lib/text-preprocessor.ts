@@ -13,26 +13,21 @@ export interface PreprocessResult {
   };
 }
 
-// 문서 유형
-export type DocType = 'law' | 'excel' | 'research_paper' | 'other';
+// MISO RAG 투입을 위한 문서 유형
+export type DocType = 'law' | 'excel' | 'manual' | 'general';
 
 /**
- * 중복 문단 제거
+ * 이전 버전의 문서 유형을 새 체계로 변환한다.
  */
-function removeDuplicateParagraphs(text: string): string {
-  const paragraphs = text.split(/\n\n+/);
-  const seen = new Set<string>();
-  const uniqueParagraphs: string[] = [];
-
-  for (const paragraph of paragraphs) {
-    const trimmed = paragraph.trim();
-    if (trimmed && !seen.has(trimmed)) {
-      seen.add(trimmed);
-      uniqueParagraphs.push(trimmed);
-    }
+export function normalizeDocType(docType: unknown): DocType {
+  if (docType === 'law' || docType === 'excel' || docType === 'manual' || docType === 'general') {
+    return docType;
   }
 
-  return uniqueParagraphs.join('\n\n');
+  if (docType === 'research_paper') return 'manual';
+  if (docType === 'other') return 'general';
+
+  return 'general';
 }
 
 /**
@@ -68,20 +63,6 @@ function removeSpecialCharacters(text: string): string {
 }
 
 /**
- * 텍스트 정제 - AI가 이해하기 쉽도록 단순화
- */
-function cleanText(text: string): string {
-  // 연속된 구두점 정리
-  text = text.replace(/([.!?])\1+/g, '$1');
-  // 괄호 안 공백 제거
-  text = text.replace(/\(\s+/g, '(').replace(/\s+\)/g, ')');
-  // 쉼표, 마침표 앞 공백 제거
-  text = text.replace(/\s+([,.])/g, '$1');
-  
-  return text;
-}
-
-/**
  * 개선된 재귀적 청킹 (Recursive Character Text Splitter)
  * - 구분자 우선순위: \n\n -> \n -> . -> 공백 -> 글자
  * - 청크 간 오버랩(Overlap) 지원으로 문맥 끊김 방지
@@ -89,7 +70,7 @@ function cleanText(text: string): string {
 function chunkTextOptimized(
   text: string,
   maxChunkSize: number = 4000,
-  overlapSize: number = 200 // 약 5% 오버랩
+  overlapSize: number = 0
 ): string[] {
   const separators = ['\n\n', '\n', '.', ' ', ''];
   
@@ -172,104 +153,145 @@ function chunkText(text: string, maxChunkSize: number = 4000): string[] {
   return chunkTextOptimized(text, maxChunkSize, 0); // 오버랩 없이 호출
 }
 
+type StructuredBlock = {
+  heading: string | null;
+  body: string;
+};
+
+type TextSplitter = (text: string, maxChunkSize: number) => string[];
+
 /**
- * 논문/보고서의 반복되는 페이지 헤더/푸터 제거
- * - 전체 라인 중 일정 횟수 이상 반복되고, 문장 형태가 아닌 짧은 텍스트를 헤더로 간주
+ * 제목 경계를 먼저 보존한 뒤 최대 크기에 맞춰 병합 또는 분할한다.
  */
-function removePageHeaders(text: string): string {
-  const lines = text.split('\n');
-  const lineCounts = new Map<string, number>();
-  
-  // 빈도 분석
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    // 너무 긴 문장은 본문일 확률이 높음 (50자 이하만 체크)
-    if (trimmed.length > 50) continue; 
-    
-    lineCounts.set(trimmed, (lineCounts.get(trimmed) || 0) + 1);
-  }
-  
-  // 전체 라인 수 대비 1% 이상 등장하거나 3회 이상 등장하는 짧은 라인은 제거 후보
-  // (논문 저자명, 저널명 등이 보통 페이지마다 나옴)
-  const headerCandidates = new Set<string>();
-  const threshold = Math.max(3, lines.length * 0.01); 
-  
-  for (const [line, count] of lineCounts.entries()) {
-    if (count >= threshold) {
-      headerCandidates.add(line);
+function chunkStructuredText(
+  text: string,
+  isHeading: (line: string) => boolean,
+  maxChunkSize: number = 4000,
+  splitText: TextSplitter = chunkText
+): string[] {
+  const blocks: StructuredBlock[] = [];
+  let currentHeading: string | null = null;
+  let bodyLines: string[] = [];
+
+  const flushBlock = () => {
+    const body = bodyLines.join('\n').trim();
+    if (currentHeading || body) {
+      blocks.push({ heading: currentHeading, body });
+    }
+    bodyLines = [];
+  };
+
+  for (const line of text.split('\n')) {
+    if (isHeading(line)) {
+      flushBlock();
+      currentHeading = line.trim();
+    } else {
+      bodyLines.push(line);
     }
   }
-  
-  // 필터링
-  return lines.filter(line => !headerCandidates.has(line.trim())).join('\n');
+  flushBlock();
+
+  const chunks: string[] = [];
+  let mergeBuffer = '';
+
+  const flushMergeBuffer = () => {
+    if (mergeBuffer) chunks.push(mergeBuffer);
+    mergeBuffer = '';
+  };
+
+  for (const block of blocks) {
+    const rendered = [block.heading, block.body].filter(Boolean).join('\n');
+
+    if (rendered.length > maxChunkSize) {
+      flushMergeBuffer();
+
+      if (!block.heading) {
+        chunks.push(...splitText(block.body, maxChunkSize));
+        continue;
+      }
+
+      const continuedHeading = `${block.heading} (계속)\n`;
+      const bodyChunkSize = Math.max(100, maxChunkSize - continuedHeading.length);
+      const bodyChunks = splitText(block.body, bodyChunkSize);
+
+      for (let index = 0; index < bodyChunks.length; index++) {
+        const heading = index === 0 ? block.heading : `${block.heading} (계속)`;
+        chunks.push(`${heading}\n${bodyChunks[index]}`.trim());
+      }
+      continue;
+    }
+
+    const nextValue = mergeBuffer ? `${mergeBuffer}\n\n${rendered}` : rendered;
+    if (nextValue.length <= maxChunkSize) {
+      mergeBuffer = nextValue;
+    } else {
+      flushMergeBuffer();
+      mergeBuffer = rendered;
+    }
+  }
+
+  flushMergeBuffer();
+  return chunks;
+}
+
+function isManualHeading(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 100) return false;
+
+  if (/^#{1,6}\s+\S+/.test(trimmed)) return true;
+  if (/^제\s*\d+\s*[장절]\s*\S*/.test(trimmed)) return true;
+  if (/^(?:개요|목적|대상|준비 사항|준비물|설치|설정|사용 방법|작업 절차|처리 절차|주의 사항|주의|경고|참고|문제 해결|오류 해결|자주 묻는 질문|FAQ)$/i.test(trimmed)) {
+    return true;
+  }
+
+  const isNumberedHeading = /^(?:(?:\d+\.)+\d*|[IVX]+\.|[가-힣]\.)\s+\S+/.test(trimmed);
+  const looksLikeInstruction = /(?:다|요|시오|세요)\.$/.test(trimmed);
+  return isNumberedHeading && !looksLikeInstruction;
 }
 
 /**
- * 학술 논문 구조 기반 청킹
- * - "1. 서론", "2.1 연구방법" 등 계층적 번호 구조 인식
+ * 설명서와 업무 매뉴얼의 소제목 및 절차 구조 기반 청킹
  */
-function chunkResearchPaper(text: string, maxChunkSize: number = 4000): string[] {
-  // 1. 페이지 헤더/푸터 노이즈 제거
-  const cleanText = removePageHeaders(text);
-  
-  // 2. 섹션 헤더 패턴 (예: "1. 서론", "2.1. 실험 결과", "IV. 결론")
-  // 숫자+점 조합 또는 로마자 숫자 등을 매칭
-  const sectionPattern = /^(?:제\s*)?[\dIVX]+(?:\.[\d]+)*\.?\s+[^\n]+$/gm;
-  
-  if (!sectionPattern.test(cleanText)) {
-    // 섹션 구조가 명확하지 않으면 개선된 일반 청킹 사용
-    return chunkTextOptimized(cleanText, maxChunkSize);
+function chunkManual(text: string, maxChunkSize: number = 4000): string[] {
+  const hasManualHeadings = text.split('\n').some(isManualHeading);
+  if (!hasManualHeadings) {
+    return chunkMarkdownWithTables(text, maxChunkSize, 0);
   }
 
-  const chunks: string[] = [];
-  const lines = cleanText.split('\n');
-  let currentBuffer = '';
-  
-  // 섹션 시작 라인인지 판별하는 함수
-  const isSectionStart = (line: string) => /^(?:제\s*)?[\dIVX]+(?:\.[\d]+)*\.?\s+[^\n]+$/.test(line.trim());
+  return chunkStructuredText(
+    text,
+    isManualHeading,
+    maxChunkSize,
+    (content, size) => chunkMarkdownWithTables(content, size, 0)
+  );
+}
 
-  for (const line of lines) {
-    if (isSectionStart(line)) {
-      // 새로운 섹션 시작
-      if (currentBuffer.trim()) {
-        // 이전 버퍼가 maxChunkSize보다 크면 재귀적 분할 적용
-        if (currentBuffer.length > maxChunkSize) {
-          chunks.push(...chunkTextOptimized(currentBuffer, maxChunkSize));
-        } else {
-          chunks.push(currentBuffer.trim());
-        }
-      }
-      currentBuffer = line;
-    } else {
-      currentBuffer = currentBuffer ? `${currentBuffer}\n${line}` : line;
-    }
+/**
+ * 법령, 계약조건, 사규 등에서 독립된 구조 제목으로 쓰이는 줄을 감지한다.
+ * DOCX 목록 번호가 앞에 붙은 "1.1.70. 제1조(목적)" 형태도 허용한다.
+ */
+function isLegalStructureHeading(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 120) return false;
+
+  return /^(?:(?:\d+\.)+\s*)?(?:제\s*\d+(?:\s*의\s*\d+)?\s*(?:편|장|절|관|조)(?=\s|$|\()|부칙(?=\s|$|\()|별표(?:\s|$|\d)|별지(?:\s|$|\d))/.test(trimmed);
+}
+
+/**
+ * 일반 문서도 명확한 조문 구조가 있으면 조문 경계를 우선 보존한다.
+ * 구조가 없는 보고서나 일반 텍스트는 기존 문단/표 기반 청킹을 유지한다.
+ */
+function chunkGeneral(text: string, maxChunkSize: number = 4000): string[] {
+  if (!text.split('\n').some(isLegalStructureHeading)) {
+    return chunkMarkdownWithTables(text, maxChunkSize, 0);
   }
 
-  // 마지막 버퍼 처리
-  if (currentBuffer.trim()) {
-    if (currentBuffer.length > maxChunkSize) {
-      chunks.push(...chunkTextOptimized(currentBuffer, maxChunkSize));
-    } else {
-      chunks.push(currentBuffer.trim());
-    }
-  }
-
-  // 병합 로직 (너무 작은 섹션들은 합치기)
-  const mergedChunks: string[] = [];
-  let mergeBuffer = '';
-  
-  for (const chunk of chunks) {
-    if ((mergeBuffer + '\n\n' + chunk).length <= maxChunkSize) {
-      mergeBuffer = mergeBuffer ? `${mergeBuffer}\n\n${chunk}` : chunk;
-    } else {
-      if (mergeBuffer) mergedChunks.push(mergeBuffer);
-      mergeBuffer = chunk;
-    }
-  }
-  if (mergeBuffer) mergedChunks.push(mergeBuffer);
-
-  return mergedChunks;
+  return chunkStructuredText(
+    text,
+    isLegalStructureHeading,
+    maxChunkSize,
+    (content, size) => chunkMarkdownWithTables(content, size, 0)
+  );
 }
 
 /**
@@ -278,77 +300,100 @@ function chunkResearchPaper(text: string, maxChunkSize: number = 4000): string[]
  * - 구조가 없으면 일반 청킹으로 fallback
  */
 function chunkLawStructure(text: string, maxChunkSize: number = 4000): string[] {
-  // 1. 법령 구조(장/조)가 있는지 확인하는 정규식
-  const lawPattern = /^제\s*\d+\s*[조장]/gm;
-  
-  if (!lawPattern.test(text)) {
+  if (!text.split('\n').some(isLegalStructureHeading)) {
     // 법령 구조가 아니면 일반 청킹 사용
     return chunkText(text, maxChunkSize);
   }
 
-  // 2. 전체 텍스트를 "제N조" 패턴으로 split하되, 구분자(제N조...)도 포함하도록 처리
-  // split with capture group을 사용하면 구분자도 배열에 포함됨
-  // 예: "제1조... 제2조..." -> split(/(제\s*\d+\s*조[^]*?)(?=제\s*\d+\s*조)/) 방식은 복잡
-  // 대신 정규식으로 매칭되는 지점들을 찾아서 substring으로 자르는 방식이 안전
+  return chunkStructuredText(text, isLegalStructureHeading, maxChunkSize, chunkText);
+}
+
+const DELEGATION_MANUAL_TITLE = '[위임전결규정 매뉴얼]';
+const DELEGATION_CATEGORY_PATTERN = /^([A-J])\.\s+\S/;
+const PAGE_MARKER_PATTERN = /^페이지\s*\d+\s*$/;
+
+type DelegationCategoryMarker = {
+  lineIndex: number;
+  letter: string;
+  title: string;
+};
+
+/**
+ * 규정 본문 뒤에 A~J 표 매뉴얼이 이어지는 위임전결 문서를 감지하고,
+ * 규정과 각 업무 카테고리를 서로 다른 청크로 보존한다.
+ */
+function chunkDelegationManualDocument(
+  text: string,
+  maxChunkSize: number = 4000
+): string[] | null {
+  const lines = text.split('\n');
+  const manualTitleIndex = lines.findIndex(
+    (line) => line.trim() === DELEGATION_MANUAL_TITLE
+  );
+
+  if (manualTitleIndex < 0) return null;
+
+  const categoryMarkers: DelegationCategoryMarker[] = [];
+  for (let lineIndex = manualTitleIndex + 1; lineIndex < lines.length; lineIndex += 1) {
+    const title = lines[lineIndex].trim();
+    const match = title.match(DELEGATION_CATEGORY_PATTERN);
+    if (!match) continue;
+
+    categoryMarkers.push({ lineIndex, letter: match[1], title });
+  }
+
+  const hasSequentialCategories =
+    categoryMarkers.length >= 2 &&
+    categoryMarkers[0].letter === 'A' &&
+    categoryMarkers.every((marker, index) =>
+      index === 0 ||
+      marker.letter.charCodeAt(0) ===
+        categoryMarkers[index - 1].letter.charCodeAt(0) + 1
+    );
+  const hasMarkdownTable = lines
+    .slice(manualTitleIndex + 1)
+    .some((line) => /^\s*\|.*---.*\|\s*$/.test(line));
+
+  if (!hasSequentialCategories || !hasMarkdownTable) return null;
 
   const chunks: string[] = [];
-  const lines = text.split('\n');
-  let currentBuffer = '';
+  const regulationText = lines.slice(0, manualTitleIndex).join('\n').trim();
+  if (regulationText) {
+    chunks.push(...chunkText(regulationText, maxChunkSize));
+  }
 
-  const isStructureStart = (line: string) => /^\s*제\s*\d+\s*[조장]/.test(line);
+  for (let index = 0; index < categoryMarkers.length; index += 1) {
+    const marker = categoryMarkers[index];
+    const nextMarker = categoryMarkers[index + 1];
+    const categoryBody = lines
+      .slice(marker.lineIndex + 1, nextMarker?.lineIndex ?? lines.length)
+      .filter((line) => !PAGE_MARKER_PATTERN.test(line.trim()))
+      .join('\n')
+      .trim();
+    const categoryPrefix = `${DELEGATION_MANUAL_TITLE}\n${marker.title}`;
+    const renderedCategory = categoryBody
+      ? `${categoryPrefix}\n${categoryBody}`
+      : categoryPrefix;
 
-  for (const line of lines) {
-    // 새로운 조/장이 시작되는 라인인지 확인
-    if (isStructureStart(line)) {
-      // 새로운 조가 시작되면 이전까지의 버퍼를 청크로 저장
-      if (currentBuffer.trim()) {
-         chunks.push(currentBuffer.trim());
-      }
-      // 새 조의 시작으로 버퍼 초기화
-      currentBuffer = line;
-    } else {
-      // 조의 내용이면 버퍼에 추가
-      currentBuffer = currentBuffer ? `${currentBuffer}\n${line}` : line;
+    if (renderedCategory.length <= maxChunkSize) {
+      chunks.push(renderedCategory);
+      continue;
+    }
+
+    const continuedPrefix = `${categoryPrefix} (계속)`;
+    const bodyChunkSize = Math.max(
+      100,
+      maxChunkSize - continuedPrefix.length - 1
+    );
+    const bodyChunks = chunkMarkdownWithTables(categoryBody, bodyChunkSize, 0);
+
+    for (let bodyIndex = 0; bodyIndex < bodyChunks.length; bodyIndex += 1) {
+      const prefix = bodyIndex === 0 ? categoryPrefix : continuedPrefix;
+      chunks.push(`${prefix}\n${bodyChunks[bodyIndex]}`.trim());
     }
   }
 
-  // 마지막 버퍼 처리
-  if (currentBuffer.trim()) {
-    chunks.push(currentBuffer.trim());
-  }
-
-  // 3. 만들어진 청크들을 maxChunkSize에 맞춰서 다시 병합하거나 분할
-  const finalChunks: string[] = [];
-  let mergeBuffer = '';
-
-  for (const chunk of chunks) {
-    // 단일 조항이 너무 큰 경우 분할
-    if (chunk.length > maxChunkSize) {
-      // 먼저 병합 버퍼가 있으면 털어냄
-      if (mergeBuffer) {
-        finalChunks.push(mergeBuffer);
-        mergeBuffer = '';
-      }
-      // 큰 조항은 일반 청킹 로직으로 분할
-      finalChunks.push(...chunkText(chunk, maxChunkSize));
-    } else {
-      // 병합 가능한지 확인
-      if ((mergeBuffer + '\n\n' + chunk).length <= maxChunkSize) {
-        mergeBuffer = mergeBuffer ? `${mergeBuffer}\n\n${chunk}` : chunk;
-      } else {
-        // 병합 불가하면 기존 버퍼 저장하고 새로 시작
-        if (mergeBuffer) finalChunks.push(mergeBuffer);
-        mergeBuffer = chunk;
-      }
-    }
-  }
-
-  // 남은 버퍼 처리
-  if (mergeBuffer) {
-    finalChunks.push(mergeBuffer);
-  }
-
-  return finalChunks;
+  return chunks;
 }
 
 
@@ -358,17 +403,14 @@ function chunkLawStructure(text: string, maxChunkSize: number = 4000): string[] 
 function basePreprocess(text: string): { originalLength: number; processed: string } {
   const originalLength = text.length;
 
-  // 1. 중복 문단 제거
-  let processed = removeDuplicateParagraphs(text);
+  // 동일 문단도 업무상 의미가 있을 수 있으므로 내용 중복은 제거하지 않는다.
+  let processed = text;
 
-  // 2. 특수 문자 제거
+  // 1. 특수 문자 제거
   processed = removeSpecialCharacters(processed);
 
-  // 3. 공백 정규화
+  // 2. 공백 정규화
   processed = normalizeWhitespace(processed);
-
-  // 4. 텍스트 정제
-  processed = cleanText(processed);
 
   return { originalLength, processed };
 }
@@ -558,7 +600,9 @@ export function preprocessByDocType(
   switch (docType) {
     case 'law': {
       const { originalLength, processed } = basePreprocess(text);
-      const chunks = chunkLawStructure(processed);
+      const chunks =
+        chunkDelegationManualDocument(processed) ??
+        chunkLawStructure(processed);
       const processedText = chunks.join(`\n\n${separator}\n\n`);
 
       return {
@@ -571,11 +615,11 @@ export function preprocessByDocType(
         },
       };
     }
-    case 'research_paper': {
-      // 논문: 페이지 헤더 제거 및 섹션 단위 청킹 + Recursive Fallback
+    case 'manual': {
       const { originalLength, processed } = basePreprocess(text);
-      // chunkResearchPaper 내부에서 removePageHeaders 호출함
-      const chunks = chunkResearchPaper(processed); 
+      const chunks =
+        chunkDelegationManualDocument(processed) ??
+        chunkManual(processed);
       const processedText = chunks.join(`\n\n${separator}\n\n`);
 
       return {
@@ -592,11 +636,13 @@ export function preprocessByDocType(
       // 엑셀 파일: 헤더 보존 및 행 단위 청킹
       return preprocessExcel(text, separator);
     }
-    case 'other':
+    case 'general':
     default: {
       const { originalLength, processed } = basePreprocess(text);
-      // 마크다운 표를 인식하여 깨지지 않도록 청킹
-      const chunks = chunkMarkdownWithTables(processed);
+      // 표를 보존하고, 조문형 문서는 명확한 구조 경계도 함께 보존
+      const chunks =
+        chunkDelegationManualDocument(processed) ??
+        chunkGeneral(processed);
       const processedText = chunks.join(`\n\n${separator}\n\n`);
 
       return {
@@ -618,7 +664,7 @@ export function preprocessByDocType(
 function chunkMarkdownWithTables(
   text: string, 
   maxChunkSize: number = 4000,
-  overlapSize: number = 200
+  overlapSize: number = 0
 ): string[] {
   // 1. 텍스트를 줄 단위로 분리하여 블록(텍스트/표)으로 그룹화
   const lines = text.split('\n');

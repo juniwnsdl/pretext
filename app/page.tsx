@@ -37,7 +37,7 @@ import remarkGfm from 'remark-gfm';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
 
-import type { DocType } from '@/hooks/useFileProcessor';
+import type { DocType } from '@/lib/text-preprocessor';
 
 import { ChunkViewerModal } from '@/components/chunk-viewer-modal';
 import { ChunkFlowViewer } from '@/components/chunk-flow-viewer';
@@ -636,28 +636,40 @@ export default function Home() {
                     onValueChange={(value) => setDocType(value as DocType)}
                     className="grid grid-cols-2 gap-4"
                   >
-                    <div className="flex items-center space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                      <RadioGroupItem id="doc-law" value="law" />
+                    <div className="flex items-start space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                      <RadioGroupItem id="doc-law" value="law" className="mt-1" />
                       <Label htmlFor="doc-law" className="flex-1 cursor-pointer font-normal">
-                        법령 및 사규
+                        <span className="block font-medium">법령·사규</span>
+                        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                          편·장·절·관·조와 부칙 구조를 우선 보존합니다
+                        </span>
                       </Label>
                     </div>
-                    <div className="flex items-center space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                      <RadioGroupItem id="doc-excel" value="excel" />
+                    <div className="flex items-start space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                      <RadioGroupItem id="doc-excel" value="excel" className="mt-1" />
                       <Label htmlFor="doc-excel" className="flex-1 cursor-pointer font-normal">
-                        엑셀 파일
+                        <span className="block font-medium">엑셀·내부 데이터</span>
+                        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                          시트명과 열 제목을 유지하며 행 단위로 나눕니다
+                        </span>
                       </Label>
                     </div>
-                    <div className="flex items-center space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                      <RadioGroupItem id="doc-research-paper" value="research_paper" />
-                      <Label htmlFor="doc-research-paper" className="flex-1 cursor-pointer font-normal">
-                        논문/보고서
+                    <div className="flex items-start space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                      <RadioGroupItem id="doc-manual" value="manual" className="mt-1" />
+                      <Label htmlFor="doc-manual" className="flex-1 cursor-pointer font-normal">
+                        <span className="block font-medium">설명서·업무 매뉴얼</span>
+                        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                          소제목과 작업 절차가 중간에서 끊기지 않게 나눕니다
+                        </span>
                       </Label>
                     </div>
-                    <div className="flex items-center space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                      <RadioGroupItem id="doc-other" value="other" />
-                      <Label htmlFor="doc-other" className="flex-1 cursor-pointer font-normal">
-                        기타
+                    <div className="flex items-start space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+                      <RadioGroupItem id="doc-general" value="general" className="mt-1" />
+                      <Label htmlFor="doc-general" className="flex-1 cursor-pointer font-normal">
+                        <span className="block font-medium">일반 문서·보고서</span>
+                        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                          문단과 표 구조를 기준으로 자연스럽게 나눕니다
+                        </span>
                       </Label>
                     </div>
                   </RadioGroup>

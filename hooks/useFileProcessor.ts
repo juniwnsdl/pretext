@@ -1,6 +1,5 @@
 import { useState, useCallback } from 'react';
-
-export type DocType = 'law' | 'excel' | 'research_paper' | 'other';
+import type { DocType } from '@/lib/text-preprocessor';
 
 export interface ProcessStats {
   originalLength: number;
@@ -41,7 +40,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
   const [processedText, setProcessedText] = useState('');
   const [processedChunks, setProcessedChunks] = useState<string[]>([]);
   const [stats, setStats] = useState<ProcessStats | null>(null);
-  const [docType, setDocType] = useState<DocType>('law');
+  const [docType, setDocType] = useState<DocType>('general');
   const [separator, setSeparator] = useState<string>('@@@');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'reading' | 'uploading' | 'processing' | 'complete' | 'error'>('idle');
@@ -63,6 +62,8 @@ export function useFileProcessor(): UseFileProcessorReturn {
     setStats(null);
     setError(null);
     setStatus('idle');
+    setDocType('general');
+    setSeparator('@@@');
   }, []);
 
   // 1. File Reading Logic
@@ -86,8 +87,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
         const text = await selectedFile.text();
         setInputText(text);
         
-        if (fileExtension === 'csv') setDocType('excel');
-        else if (fileExtension === 'json') setDocType('other');
+        setDocType(fileExtension === 'csv' ? 'excel' : 'general');
         
         setStatus('idle');
         return;
@@ -153,6 +153,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
       if (!workflowResponse.ok) throw new Error(workflowResult.error || '처리 실패');
 
       setInputText(workflowResult.data.result);
+      setDocType('general');
       setStatus('idle');
 
     } catch (err) {
