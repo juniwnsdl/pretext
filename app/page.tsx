@@ -43,8 +43,10 @@ import { ChunkViewerModal } from '@/components/chunk-viewer-modal';
 import { ChunkFlowViewer } from '@/components/chunk-flow-viewer';
 import { Switch } from '@/components/ui/switch';
 import { ProgressStepper } from '@/components/progress-stepper';
+import { UsageGuide } from '@/components/usage-guide';
 
 import { useFileProcessor } from '@/hooks/useFileProcessor';
+import { FILE_INPUT_ACCEPT } from '@/lib/file-processing-policy';
 
 // ReactMarkdown 플러그인: 모든 요소에 data-source-pos 속성을 주입하여 원본 위치 추적
 const addSourcePosPlugin = () => {
@@ -121,6 +123,7 @@ export default function Home() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingText, setEditingText] = useState('');
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
+  const [headerTab, setHeaderTab] = useState<'preprocess' | 'guide'>('preprocess');
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -355,18 +358,49 @@ export default function Home() {
         {/* 헤더 */}
         <div className="mb-8">
           <div className="mb-6">
-            <h1 className="text-3xl font-bold tracking-tight">문서 전처리</h1>
+            <h1 className="text-3xl font-bold tracking-tight">
+              문서전처리(MISO RAG 투입용 TXT 제작 도구)
+            </h1>
             <p className="text-muted-foreground mt-1">
-              문서를 RAG 시스템에 최적화된 형태로 전처리합니다
+              사내 문서를 MISO RAG에 바로 등록할 수 있는 TXT 파일로 정리합니다.
             </p>
+
+            <div
+              role="tablist"
+              aria-label="화면 선택"
+              className="mt-5 inline-flex rounded-lg border bg-muted/40 p-1"
+            >
+              <Button
+                type="button"
+                role="tab"
+                aria-selected={headerTab === 'preprocess'}
+                variant={headerTab === 'preprocess' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setHeaderTab('preprocess')}
+              >
+                전처리
+              </Button>
+              <Button
+                type="button"
+                role="tab"
+                aria-selected={headerTab === 'guide'}
+                variant={headerTab === 'guide' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setHeaderTab('guide')}
+              >
+                사용법
+              </Button>
+            </div>
           </div>
 
           {/* 진행 단계 표시 */}
-          <ProgressStepper steps={steps} />
+          {headerTab === 'preprocess' && <ProgressStepper steps={steps} />}
         </div>
 
+        {headerTab === 'guide' && <UsageGuide />}
+
         {/* 에러 알림 */}
-        {error && (
+        {headerTab === 'preprocess' && error && (
           <Alert variant="destructive" className="mb-6">
             <AlertCircle className="h-4 w-4" />
             <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
@@ -374,7 +408,11 @@ export default function Home() {
         )}
 
         {/* 메인 컨텐츠 */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          className={headerTab === 'preprocess' ? 'w-full' : 'hidden'}
+        >
           <TabsList className="grid w-full grid-cols-4 h-auto p-1">
             <TabsTrigger value="upload" className="py-2.5">
               1. 파일 업로드
@@ -405,7 +443,7 @@ export default function Home() {
                     key={inputKey}
                     id="file"
                     type="file"
-                    accept=".txt,.md,.markdown,.json,.csv,.log,.xml,.yml,.yaml,.pdf,.html,.xlsx,.xls,.docx,.pptx,.ppt,.jpg,.jpeg,.png,.gif,.webp,.svg"
+                    accept={FILE_INPUT_ACCEPT}
                     onChange={(e) => {
                       const selectedFile = e.target.files?.[0];
                       if (selectedFile) {
