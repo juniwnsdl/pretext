@@ -842,7 +842,6 @@ export default function Home() {
                             description: '수정 내용이 저장되고 청크가 재구성되었습니다.',
                           });
                         }}
-                        disabled={!editingText.trim()}
                       >
                         저장하기
                       </Button>
