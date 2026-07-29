@@ -40,8 +40,8 @@ type GeneralUnit = TextUnit | TableUnit;
 
 function hasSource(block: DocumentBlock): boolean {
   return block.kind === 'table'
-    ? (block.rows?.length ?? 0) > 0
-    : Boolean(block.text?.length);
+    ? (block.rows ?? []).some((row) => row.some((cell) => cell.trim().length > 0))
+    : Boolean(block.text?.trim().length);
 }
 
 function samePath(left: string[], right: string[]): boolean {
@@ -115,6 +115,19 @@ function trimBoundaryBlankLines(lines: Array<{ text: string; sourceId: string }>
   while (start < end && lines[start].text.trim().length === 0) start += 1;
   while (end > start && lines[end - 1].text.trim().length === 0) end -= 1;
   return lines.slice(start, end);
+}
+
+function renderListItem(block: DocumentBlock): string {
+  const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
+  const depth = Math.max(0, block.depth ?? 0);
+  const indentation = '  '.repeat(depth);
+  const marker = block.ordered ? '1. ' : '- ';
+  const firstLine = lines[0].replace(/^\s*(?:[-*+•◦]|\d+[.)])\s+/u, '');
+  const continuationIndentation = `${indentation}   `;
+  return [
+    `${indentation}${marker}${firstLine}`,
+    ...lines.slice(1).map((line) => `${continuationIndentation}${line}`),
+  ].join('\n');
 }
 
 function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
@@ -202,6 +215,8 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
   };
 
   for (const block of [...document.blocks].sort((left, right) => left.order - right.order)) {
+    if (!hasSource(block)) continue;
+
     if (block.kind === 'heading') {
       const markdown = stripMarkdownHeading(block.text ?? '') ?? block.text?.trim() ?? '';
       const parsed = parseGeneralHeading(markdown, false);
@@ -232,7 +247,16 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       continue;
     }
 
-    acceptLines((block.text ?? '').replace(/\r\n?/gu, '\n').split('\n'), block.id);
+    if (block.kind === 'raw-text') {
+      acceptLines((block.text ?? '').replace(/\r\n?/gu, '\n').split('\n'), block.id);
+    } else if (block.kind === 'list-item') {
+      bodyLines.push({ text: renderListItem(block), sourceId: block.id });
+    } else {
+      bodyLines.push(
+        ...(block.text ?? '').replace(/\r\n?/gu, '\n').split('\n')
+          .map((text) => ({ text, sourceId: block.id })),
+      );
+    }
   }
   flushText();
   return units;

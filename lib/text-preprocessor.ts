@@ -85,12 +85,19 @@ function documentNameFromOptions(options: PreprocessOptions | string): string {
   return '텍스트 문서.txt';
 }
 
-/** Compatible flat-text façade. Legacy separator strings are accepted but output always uses `@@@`. */
+function validateLegacySeparator(options: PreprocessOptions | string): void {
+  if (typeof options === 'string' && options !== '' && options !== '@@@') {
+    throw new TypeError("Legacy separator must be an empty string or exactly '@@@'.");
+  }
+}
+
+/** Compatible flat-text façade. Only empty and `@@@` legacy separator strings are accepted. */
 export function preprocessByDocType(
   text: string,
   docType: DocType,
   options: PreprocessOptions | string = {},
 ): PreprocessResult {
+  validateLegacySeparator(options);
   const prepared = prepareSourceText(text);
   const document: ExtractedDocument = {
     version: 1,
