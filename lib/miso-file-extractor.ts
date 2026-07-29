@@ -197,7 +197,7 @@ export async function extractDocxPreferLocal(
 
   try {
     throwIfAborted(signal);
-    const document = await miso(file, signal);
+    const document = await raceWithAbort(miso(file, signal), signal);
     throwIfAborted(signal);
     const warning: PreprocessIssue = {
       code: 'DOCX_FALLBACK',
