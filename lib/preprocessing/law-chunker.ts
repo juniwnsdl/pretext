@@ -19,11 +19,16 @@ import {
 
 type HierarchyKind = 'part' | 'chapter' | 'section' | 'subsection';
 
+interface LocationEntry {
+  text: string;
+  sourceId: string;
+}
+
 interface HierarchyState {
-  part: string | null;
-  chapter: string | null;
-  section: string | null;
-  subsection: string | null;
+  part: LocationEntry | null;
+  chapter: LocationEntry | null;
+  section: LocationEntry | null;
+  subsection: LocationEntry | null;
 }
 
 interface ParsedLegalHeading {
@@ -37,12 +42,19 @@ interface TextUnit {
   kind: 'text';
   location: string[];
   body: string;
+  sourceBlockIds: string[];
 }
 
 interface TableUnit {
   kind: 'table';
   location: string[];
   block: DocumentBlock;
+  sourceBlockIds: string[];
+}
+
+interface SourcedLine {
+  text: string;
+  sourceId: string;
 }
 
 type LegalUnit = TextUnit | TableUnit;
@@ -79,6 +91,12 @@ function stripMarkdownHeading(line: string): string {
   return value;
 }
 
+function hasExplicitMarkdownHeadingSyntax(line: string): boolean {
+  const value = line.trim();
+  return /^#{1,6}\s+/u.test(value) ||
+    /^(?:\*\*.*\*\*|__.*__|~~.*~~|`.*`)$/u.test(value);
+}
+
 function parseLegalHeading(line: string): ParsedLegalHeading | null {
   const trimmed = stripMarkdownHeading(line);
   if (!trimmed) return null;
@@ -109,8 +127,12 @@ function parseLegalHeading(line: string): ParsedLegalHeading | null {
     };
   }
 
-  const hierarchyMatch = value.match(/^(제\s*\d+\s*(편|장|절|관))(?:\s+.*)?$/u);
+  const hierarchyMatch = value.match(/^(제\s*\d+\s*(편|장|절|관))(?:\s+(.+))?$/u);
   if (hierarchyMatch) {
+    const title = hierarchyMatch[3]?.trim() ?? '';
+    const sentenceLikeTitle = /(?:다|요|시오|세요)(?:[.!?。！？])?$/u.test(title);
+    if (!hasExplicitMarkdownHeadingSyntax(line) && sentenceLikeTitle) return null;
+
     const kindByUnit: Record<string, HierarchyKind> = {
       편: 'part',
       장: 'chapter',
@@ -138,12 +160,16 @@ function parseLegalHeading(line: string): ParsedLegalHeading | null {
   return null;
 }
 
-function hierarchyPath(state: HierarchyState): string[] {
+function hierarchyPath(state: HierarchyState): LocationEntry[] {
   return [state.part, state.chapter, state.section, state.subsection]
-    .filter((value): value is string => Boolean(value));
+    .filter((value): value is LocationEntry => Boolean(value));
 }
 
-function updateHierarchy(state: HierarchyState, kind: HierarchyKind, heading: string): void {
+function updateHierarchy(
+  state: HierarchyState,
+  kind: HierarchyKind,
+  heading: LocationEntry,
+): void {
   if (kind === 'part') {
     state.part = heading;
     state.chapter = null;
@@ -169,9 +195,12 @@ function blockHasSource(block: DocumentBlock): boolean {
 
 function blockAsText(block: DocumentBlock): string {
   if (block.kind !== 'table') return block.text ?? '';
-  return (block.rows ?? [])
-    .map((row) => `| ${row.join(' | ')} |`)
-    .join('\n');
+  const rows = block.rows ?? [];
+  if (rows.length === 0) return '';
+  const header = `| ${rows[0].join(' | ')} |`;
+  const separator = `| ${rows[0].map(() => '---').join(' | ')} |`;
+  return [header, separator, ...rows.slice(1).map((row) =>
+    `| ${row.join(' | ')} |`)].join('\n');
 }
 
 function isMarkdownTableLine(line: string): boolean {
@@ -247,34 +276,56 @@ function contextBodyLimit(context: string[]): number {
   return Math.max(1, APP_CHUNK_LIMIT - context.join('\n').length - 1);
 }
 
+function claimSourceIds(candidates: string[], claimed: Set<string>): string[] {
+  const result: string[] = [];
+  for (const sourceId of candidates) {
+    if (!sourceId || claimed.has(sourceId)) continue;
+    claimed.add(sourceId);
+    result.push(sourceId);
+  }
+  return result;
+}
+
+function expectedSourceBlockIds(document: ExtractedDocument): string[] {
+  return document.blocks.filter(blockHasSource).map((block) => block.id);
+}
+
 function parseLawUnits(document: ExtractedDocument): LegalUnit[] {
   const units: LegalUnit[] = [];
+  const claimedSourceIds = new Set<string>();
   const hierarchy: HierarchyState = {
     part: null,
     chapter: null,
     section: null,
     subsection: null,
   };
-  let specialRoot: string | null = null;
-  let activeLocation: string[] = [];
-  let bodyLines: string[] = [];
+  let specialRoot: LocationEntry | null = null;
+  let activeLocation: LocationEntry[] = [];
+  let bodyLines: SourcedLine[] = [];
   let strongBoundaryPending = false;
   let tableIndex = 0;
 
   const flushText = (preserveEmptyBoundary: boolean = true): void => {
-    const body = bodyLines.join('\n').trim();
-    if (body || (preserveEmptyBoundary && strongBoundaryPending)) {
+    const body = bodyLines.map((line) => line.text).join('\n');
+    const hasBody = bodyLines.some((line) => line.text.length > 0);
+    if (hasBody || (preserveEmptyBoundary && strongBoundaryPending)) {
       units.push({
         kind: 'text',
-        location: activeLocation.length > 0 ? [...activeLocation] : ['전문'],
+        location: activeLocation.length > 0
+          ? activeLocation.map((entry) => entry.text)
+          : ['전문'],
         body,
+        sourceBlockIds: claimSourceIds([
+          ...activeLocation.map((entry) => entry.sourceId),
+          ...bodyLines.map((line) => line.sourceId),
+        ], claimedSourceIds),
       });
     }
     bodyLines = [];
     strongBoundaryPending = false;
   };
 
-  const acceptHeading = (heading: ParsedLegalHeading): void => {
+  const acceptHeading = (heading: ParsedLegalHeading, sourceId: string): void => {
     flushText();
     if (
       heading.kind === 'part' ||
@@ -283,31 +334,34 @@ function parseLawUnits(document: ExtractedDocument): LegalUnit[] {
       heading.kind === 'subsection'
     ) {
       specialRoot = null;
-      updateHierarchy(hierarchy, heading.kind, heading.heading);
+      updateHierarchy(hierarchy, heading.kind, { text: heading.heading, sourceId });
       activeLocation = hierarchyPath(hierarchy);
       return;
     }
 
     if (heading.kind === 'article') {
+      const article = { text: heading.heading, sourceId };
       activeLocation = specialRoot
-        ? [specialRoot, heading.heading]
-        : [...hierarchyPath(hierarchy), heading.heading];
+        ? [specialRoot, article]
+        : [...hierarchyPath(hierarchy), article];
       strongBoundaryPending = true;
       const firstBody = [heading.leadingMetadata, heading.inlineBody]
         .filter(Boolean)
         .join(' ');
-      if (firstBody) bodyLines.push(firstBody);
+      if (firstBody) bodyLines.push({ text: firstBody, sourceId });
       return;
     }
 
-    specialRoot = heading.heading;
+    specialRoot = { text: heading.heading, sourceId };
     hierarchy.part = null;
     hierarchy.chapter = null;
     hierarchy.section = null;
     hierarchy.subsection = null;
-    activeLocation = [heading.heading];
+    activeLocation = [specialRoot];
     strongBoundaryPending = true;
-    if (heading.leadingMetadata) bodyLines.push(heading.leadingMetadata);
+    if (heading.leadingMetadata) {
+      bodyLines.push({ text: heading.leadingMetadata, sourceId });
+    }
   };
 
   const acceptLines = (lines: string[], sourceId: string): void => {
@@ -318,9 +372,10 @@ function parseLawUnits(document: ExtractedDocument): LegalUnit[] {
         index + 1 < lines.length &&
         isMarkdownSeparatorLine(lines[index + 1])
       ) {
-        if (bodyLines.join('\n').trim()) {
+        if (bodyLines.some((entry) => entry.text.trim().length > 0)) {
           flushText();
         } else {
+          bodyLines = [];
           strongBoundaryPending = false;
         }
         const tableLines: string[] = [];
@@ -336,39 +391,51 @@ function parseLawUnits(document: ExtractedDocument): LegalUnit[] {
         if (parsedTable) {
           units.push({
             kind: 'table',
-            location: activeLocation.length > 0 ? [...activeLocation] : ['전문'],
+            location: activeLocation.length > 0
+              ? activeLocation.map((entry) => entry.text)
+              : ['전문'],
             block: parsedTable,
+            sourceBlockIds: claimSourceIds([
+              ...activeLocation.map((entry) => entry.sourceId),
+              sourceId,
+            ], claimedSourceIds),
           });
         } else {
-          bodyLines.push(...tableLines);
+          bodyLines.push(...tableLines.map((text) => ({ text, sourceId })));
         }
         continue;
       }
 
       const heading = parseLegalHeading(line);
       if (heading) {
-        acceptHeading(heading);
+        acceptHeading(heading, sourceId);
       } else {
-        bodyLines.push(line);
+        bodyLines.push({ text: line, sourceId });
       }
     }
   };
 
   for (const block of [...document.blocks].sort((left, right) => left.order - right.order)) {
     if (block.kind === 'table') {
-      if (bodyLines.join('\n').trim()) {
+      if (bodyLines.some((entry) => entry.text.trim().length > 0)) {
         flushText();
       } else {
+        bodyLines = [];
         strongBoundaryPending = false;
       }
+      const tableLocation = block.headingPath.length > 0
+        ? block.headingPath.map((text) => ({ text, sourceId: block.id }))
+        : activeLocation;
       units.push({
         kind: 'table',
-        location: block.headingPath.length > 0
-          ? [...block.headingPath]
-          : activeLocation.length > 0
-            ? [...activeLocation]
-            : ['전문'],
+        location: tableLocation.length > 0
+          ? tableLocation.map((entry) => entry.text)
+          : ['전문'],
         block,
+        sourceBlockIds: claimSourceIds([
+          ...tableLocation.map((entry) => entry.sourceId),
+          block.id,
+        ], claimedSourceIds),
       });
       continue;
     }
@@ -376,22 +443,6 @@ function parseLawUnits(document: ExtractedDocument): LegalUnit[] {
   }
   flushText();
   return units;
-}
-
-function assignOriginalSourceIds(
-  document: ExtractedDocument,
-  drafts: ChunkDraft[],
-): string[] {
-  const expectedSourceBlockIds = document.blocks
-    .filter(blockHasSource)
-    .map((block) => block.id);
-  if (drafts.length > 0) {
-    drafts.forEach((draft) => {
-      draft.sourceBlockIds = [];
-    });
-    drafts[0].sourceBlockIds = [...expectedSourceBlockIds];
-  }
-  return expectedSourceBlockIds;
 }
 
 /**
@@ -406,26 +457,29 @@ export function chunkLawDocument(document: ExtractedDocument): ChunkingOutput {
     const context = contextLines(document.fileName, unit.location);
     if (unit.kind === 'table') {
       const tableOutput = chunkTableBlock(unit.block, context);
-      drafts.push(...tableOutput.drafts);
+      drafts.push(...tableOutput.drafts.map((draft, index) => ({
+        ...draft,
+        sourceBlockIds: index === 0 ? [...unit.sourceBlockIds] : [],
+      })));
       warnings.push(...tableOutput.warnings);
       continue;
     }
 
     const bodyLimit = contextBodyLimit(context);
     const bodies = unit.body ? splitLegalBody(unit.body, bodyLimit) : [''];
-    for (const body of bodies) {
+    bodies.forEach((body, index) => {
       drafts.push({
         body,
         contextLines: context,
-        sourceBlockIds: [],
+        sourceBlockIds: index === 0 ? [...unit.sourceBlockIds] : [],
         warnings: [],
       });
-    }
+    });
   }
 
   return {
     drafts,
-    expectedSourceBlockIds: assignOriginalSourceIds(document, drafts),
+    expectedSourceBlockIds: expectedSourceBlockIds(document),
     warnings,
   };
 }
@@ -434,97 +488,148 @@ interface DelegationCategory {
   lineIndex: number;
   letter: string;
   title: string;
+  sourceId: string;
 }
 
-function delegationTableRange(lines: string[]): { start: number; end: number } | null {
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    if (!isMarkdownTableLine(lines[index]) || !isMarkdownSeparatorLine(lines[index + 1])) {
-      continue;
-    }
-    let end = index + 2;
-    while (end < lines.length && isMarkdownTableLine(lines[end])) end += 1;
-    return { start: index, end };
-  }
-  return null;
-}
+type DelegationSegment = {
+  kind: 'text' | 'table';
+  lines: SourcedLine[];
+};
 
-function pushDelegationTextDrafts(
-  drafts: ChunkDraft[],
-  prefix: string,
-  text: string,
-): void {
-  const bodyLimit = Math.max(1, APP_CHUNK_LIMIT - prefix.length - 1);
-  for (const piece of splitTextPreservingSeparators(text, bodyLimit)) {
-    drafts.push({
-      body: `${prefix}\n${piece}`.trim(),
-      contextLines: [],
-      sourceBlockIds: [],
-      warnings: [],
+function documentAsSourcedLines(document: ExtractedDocument): SourcedLine[] {
+  return [...document.blocks]
+    .sort((left, right) => left.order - right.order)
+    .flatMap((block) => {
+      const text = blockAsText(block).replace(/\r\n?/gu, '\n');
+      return text ? text.split('\n').map((line) => ({ text: line, sourceId: block.id })) : [];
     });
+}
+
+function splitSourcedLines(
+  lines: SourcedLine[],
+  maxLength: number,
+): Array<{ body: string; sourceIds: string[] }> {
+  const spans: Array<{ start: number; end: number; sourceId: string }> = [];
+  let text = '';
+  lines.forEach((line, index) => {
+    if (index > 0) text += '\n';
+    const start = text.length;
+    text += line.text;
+    spans.push({ start, end: text.length, sourceId: line.sourceId });
+  });
+
+  let offset = 0;
+  return splitTextPreservingSeparators(text, maxLength).map((body) => {
+    const start = offset;
+    const end = start + body.length;
+    offset = end;
+    return {
+      body,
+      sourceIds: [...new Set(spans
+        .filter((span) => span.start < end && span.end > start)
+        .map((span) => span.sourceId))],
+    };
+  });
+}
+
+function delegationSegments(lines: SourcedLine[]): DelegationSegment[] {
+  const segments: DelegationSegment[] = [];
+  let textLines: SourcedLine[] = [];
+  const flushText = (): void => {
+    if (textLines.length > 0) segments.push({ kind: 'text', lines: textLines });
+    textLines = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (
+      isMarkdownTableLine(lines[index].text) &&
+      index + 1 < lines.length &&
+      isMarkdownSeparatorLine(lines[index + 1].text)
+    ) {
+      flushText();
+      const tableLines: SourcedLine[] = [];
+      while (index < lines.length && isMarkdownTableLine(lines[index].text)) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      index -= 1;
+      segments.push({ kind: 'table', lines: tableLines });
+    } else {
+      textLines.push(lines[index]);
+    }
   }
+  flushText();
+  return segments;
 }
 
 function chunkDelegationCategory(
   title: string,
-  bodyLines: string[],
+  bodyLines: SourcedLine[],
   categoryIndex: number,
+  prefixSourceIds: string[],
+  claimedSourceIds: Set<string>,
 ): { drafts: ChunkDraft[]; warnings: PreprocessIssue[] } {
   const prefix = `${DELEGATION_MANUAL_TITLE}\n${title}`;
-  const tableRange = delegationTableRange(bodyLines);
-  if (!tableRange) {
-    const text = bodyLines.join('\n').trim();
-    if (!text) {
-      return {
-        drafts: [{
-          body: prefix,
-          contextLines: [],
-          sourceBlockIds: [],
-          warnings: [],
-        }],
-        warnings: [],
-      };
-    }
-    const drafts: ChunkDraft[] = [];
-    pushDelegationTextDrafts(drafts, prefix, text);
-    return { drafts, warnings: [] };
-  }
+  const bodyLimit = Math.max(1, APP_CHUNK_LIMIT - prefix.length - 1);
+  const drafts: ChunkDraft[] = [];
+  const warnings: PreprocessIssue[] = [];
+  let tableNumber = 0;
 
-  const before = bodyLines.slice(0, tableRange.start).join('\n').trim();
-  const tableText = bodyLines.slice(tableRange.start, tableRange.end).join('\n');
-  const after = bodyLines.slice(tableRange.end).join('\n').trim();
-  const [tableBlock] = extractMarkdownTableBlocks(
-    tableText,
-    `delegation-${categoryIndex}`,
-  );
-  if (!tableBlock) {
-    const drafts: ChunkDraft[] = [];
-    pushDelegationTextDrafts(drafts, prefix, bodyLines.join('\n').trim());
-    return { drafts, warnings: [] };
-  }
-
-  const tableContext = before ? [prefix, before] : [prefix];
-  const tableOutput = chunkTableBlock(tableBlock, tableContext);
-  const drafts = tableOutput.drafts.map((draft, index) => ({
-    body: [
-      prefix,
-      index === 0 && before ? before : '',
-      draft.body,
-    ].filter(Boolean).join('\n'),
-    contextLines: [],
-    sourceBlockIds: [],
-    warnings: [...draft.warnings],
-  }));
-
-  if (after) {
+  const appendPiece = (body: string, candidateSourceIds: string[]): void => {
+    if (!body) return;
     const last = drafts.at(-1);
-    if (last && last.body.length + after.length + 1 <= APP_CHUNK_LIMIT) {
-      last.body += `\n${after}`;
-    } else {
-      pushDelegationTextDrafts(drafts, prefix, after);
+    const pieceSourceIds = claimSourceIds(candidateSourceIds, claimedSourceIds);
+    if (last && last.body.length + body.length + 1 <= APP_CHUNK_LIMIT) {
+      last.body += `\n${body}`;
+      last.sourceBlockIds.push(...pieceSourceIds);
+      return;
     }
+    drafts.push({
+      body: `${prefix}\n${body}`,
+      contextLines: [],
+      sourceBlockIds: [
+        ...claimSourceIds(prefixSourceIds, claimedSourceIds),
+        ...pieceSourceIds,
+      ],
+      warnings: [],
+    });
+  };
+
+  for (const segment of delegationSegments(bodyLines)) {
+    if (segment.kind === 'text') {
+      for (const piece of splitSourcedLines(segment.lines, bodyLimit)) {
+        appendPiece(piece.body, piece.sourceIds);
+      }
+      continue;
+    }
+
+    const [tableBlock] = extractMarkdownTableBlocks(
+      segment.lines.map((line) => line.text).join('\n'),
+      `delegation-${categoryIndex}-${++tableNumber}`,
+    );
+    if (!tableBlock) {
+      for (const piece of splitSourcedLines(segment.lines, bodyLimit)) {
+        appendPiece(piece.body, piece.sourceIds);
+      }
+      continue;
+    }
+    const tableOutput = chunkTableBlock(tableBlock, [prefix]);
+    warnings.push(...tableOutput.warnings);
+    const tableSourceIds = [...new Set(segment.lines.map((line) => line.sourceId))];
+    tableOutput.drafts.forEach((draft, index) => {
+      appendPiece(draft.body, index === 0 ? tableSourceIds : []);
+    });
   }
 
-  return { drafts, warnings: tableOutput.warnings };
+  if (drafts.length === 0) {
+    drafts.push({
+      body: prefix,
+      contextLines: [],
+      sourceBlockIds: claimSourceIds(prefixSourceIds, claimedSourceIds),
+      warnings: [],
+    });
+  }
+  return { drafts, warnings };
 }
 
 /**
@@ -534,13 +639,8 @@ function chunkDelegationCategory(
 export function chunkDelegationManualDocument(
   document: ExtractedDocument,
 ): ChunkingOutput | null {
-  const text = [...document.blocks]
-    .sort((left, right) => left.order - right.order)
-    .map(blockAsText)
-    .filter(Boolean)
-    .join('\n')
-    .replace(/\r\n?/gu, '\n');
-  const lines = text.split('\n');
+  const sourcedLines = documentAsSourcedLines(document);
+  const lines = sourcedLines.map((line) => line.text);
   const manualTitleIndex = lines.findIndex(
     (line) => line.trim() === DELEGATION_MANUAL_TITLE,
   );
@@ -550,7 +650,14 @@ export function chunkDelegationManualDocument(
   for (let lineIndex = manualTitleIndex + 1; lineIndex < lines.length; lineIndex += 1) {
     const title = lines[lineIndex].trim();
     const match = title.match(DELEGATION_CATEGORY_PATTERN);
-    if (match) categoryMarkers.push({ lineIndex, letter: match[1], title });
+    if (match) {
+      categoryMarkers.push({
+        lineIndex,
+        letter: match[1],
+        title,
+        sourceId: sourcedLines[lineIndex].sourceId,
+      });
+    }
   }
 
   const hasSequentialCategories =
@@ -570,13 +677,16 @@ export function chunkDelegationManualDocument(
 
   const drafts: ChunkDraft[] = [];
   const warnings: PreprocessIssue[] = [...document.warnings];
-  const regulationText = lines.slice(0, manualTitleIndex).join('\n').trim();
-  if (regulationText) {
-    for (const body of splitTextPreservingSeparators(regulationText, APP_CHUNK_LIMIT)) {
+  const claimedSourceIds = new Set<string>();
+  for (const piece of splitSourcedLines(
+    sourcedLines.slice(0, manualTitleIndex),
+    APP_CHUNK_LIMIT,
+  )) {
+    if (piece.body) {
       drafts.push({
-        body,
+        body: piece.body,
         contextLines: [],
-        sourceBlockIds: [],
+        sourceBlockIds: claimSourceIds(piece.sourceIds, claimedSourceIds),
         warnings: [],
       });
     }
@@ -586,8 +696,10 @@ export function chunkDelegationManualDocument(
     const nextMarker = categoryMarkers[index + 1];
     const category = chunkDelegationCategory(
       marker.title,
-      lines.slice(marker.lineIndex + 1, nextMarker?.lineIndex ?? lines.length),
+      sourcedLines.slice(marker.lineIndex + 1, nextMarker?.lineIndex ?? lines.length),
       index + 1,
+      [sourcedLines[manualTitleIndex].sourceId, marker.sourceId],
+      claimedSourceIds,
     );
     drafts.push(...category.drafts);
     warnings.push(...category.warnings);
@@ -595,7 +707,7 @@ export function chunkDelegationManualDocument(
 
   return {
     drafts,
-    expectedSourceBlockIds: assignOriginalSourceIds(document, drafts),
+    expectedSourceBlockIds: expectedSourceBlockIds(document),
     warnings,
   };
 }
