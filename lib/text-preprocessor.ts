@@ -317,13 +317,11 @@ function chunkStructuredText(
         continue;
       }
 
-      const continuedHeading = `${block.heading} (계속)\n`;
-      const bodyChunkSize = Math.max(100, maxChunkSize - continuedHeading.length);
+      const bodyChunkSize = Math.max(100, maxChunkSize - block.heading.length - 1);
       const bodyChunks = splitText(block.body, bodyChunkSize);
 
-      for (let index = 0; index < bodyChunks.length; index++) {
-        const heading = index === 0 ? block.heading : `${block.heading} (계속)`;
-        chunks.push(`${heading}\n${bodyChunks[index]}`.trim());
+      for (const bodyChunk of bodyChunks) {
+        chunks.push(`${block.heading}\n${bodyChunk}`.trim());
       }
       continue;
     }
@@ -573,7 +571,6 @@ function chunkLawStructure(text: string, maxChunkSize: number = 4000): string[] 
 
 const DELEGATION_MANUAL_TITLE = '[위임전결규정 매뉴얼]';
 const DELEGATION_CATEGORY_PATTERN = /^([A-J])\.\s+\S/;
-const PAGE_MARKER_PATTERN = /^페이지\s*\d+\s*$/;
 
 type DelegationCategoryMarker = {
   lineIndex: number;
@@ -630,7 +627,6 @@ function chunkDelegationManualDocument(
     const nextMarker = categoryMarkers[index + 1];
     const categoryBody = lines
       .slice(marker.lineIndex + 1, nextMarker?.lineIndex ?? lines.length)
-      .filter((line) => !PAGE_MARKER_PATTERN.test(line.trim()))
       .join('\n')
       .trim();
     const categoryPrefix = `${DELEGATION_MANUAL_TITLE}\n${marker.title}`;
@@ -643,16 +639,14 @@ function chunkDelegationManualDocument(
       continue;
     }
 
-    const continuedPrefix = `${categoryPrefix} (계속)`;
     const bodyChunkSize = Math.max(
       100,
-      maxChunkSize - continuedPrefix.length - 1
+      maxChunkSize - categoryPrefix.length - 1
     );
     const bodyChunks = chunkMarkdownWithTables(categoryBody, bodyChunkSize, 0);
 
-    for (let bodyIndex = 0; bodyIndex < bodyChunks.length; bodyIndex += 1) {
-      const prefix = bodyIndex === 0 ? categoryPrefix : continuedPrefix;
-      chunks.push(`${prefix}\n${bodyChunks[bodyIndex]}`.trim());
+    for (const bodyChunk of bodyChunks) {
+      chunks.push(`${categoryPrefix}\n${bodyChunk}`.trim());
     }
   }
 
