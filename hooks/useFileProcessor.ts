@@ -1,5 +1,10 @@
 import { useState, useCallback } from 'react';
 import type { DocType } from '@/lib/text-preprocessor';
+import {
+  getFileExtension,
+  getFileProcessingRoute,
+  isFileSizeAllowed,
+} from '@/lib/file-processing-policy';
 
 export interface ProcessStats {
   originalLength: number;
@@ -45,8 +50,6 @@ export function useFileProcessor(): UseFileProcessorReturn {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'reading' | 'uploading' | 'processing' | 'complete' | 'error'>('idle');
 
-  const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
-
   const setFile = useCallback((newFile: File | null) => {
     setFileState(newFile);
     if (!newFile) {
@@ -68,8 +71,16 @@ export function useFileProcessor(): UseFileProcessorReturn {
 
   // 1. File Reading Logic
   const handleFileRead = useCallback(async (selectedFile: File) => {
-    if (selectedFile.size > MAX_FILE_SIZE_BYTES) {
+    if (!isFileSizeAllowed(selectedFile.size)) {
       setError('파일 용량이 50MB를 초과했습니다.');
+      return;
+    }
+
+    const processingRoute = getFileProcessingRoute(selectedFile.name);
+    if (processingRoute === 'unsupported') {
+      setFile(selectedFile);
+      setError('지원하지 않는 파일 형식입니다. PDF, DOCX 또는 TXT 등 지원 형식으로 변환해주세요.');
+      setStatus('error');
       return;
     }
 
@@ -77,13 +88,11 @@ export function useFileProcessor(): UseFileProcessorReturn {
     setStatus('reading');
     setError(null);
 
-    const textExtensions = ['txt', 'md', 'markdown', 'json', 'csv', 'log', 'xml', 'yml', 'yaml'];
-    const excelExtensions = ['xlsx', 'xls', 'ods'];
-    const fileExtension = selectedFile.name.split('.').pop()?.toLowerCase();
+    const fileExtension = getFileExtension(selectedFile.name);
 
     try {
       // 1-1. Text Files
-      if (fileExtension && textExtensions.includes(fileExtension)) {
+      if (processingRoute === 'local-text') {
         const text = await selectedFile.text();
         setInputText(text);
         
@@ -94,7 +103,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
       }
 
       // 1-2. Excel Files (Processed via Web Worker)
-      if (fileExtension && excelExtensions.includes(fileExtension)) {
+      if (processingRoute === 'local-excel') {
         return new Promise<void>((resolve, reject) => {
           const worker = new Worker(new URL('../workers/file.worker.ts', import.meta.url));
           
