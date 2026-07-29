@@ -62,6 +62,113 @@ function removeSpecialCharacters(text: string): string {
   return text;
 }
 
+function isPageNumberLine(line: string): boolean {
+  const value = line.trim();
+  return /^(?:\d+\s*[-–—/]\s*\d+|(?:페이지|page)\s*\d+(?:\s*(?:\/|of)\s*\d+)?)$/i.test(value);
+}
+
+function isShortDecorationCandidate(line: string): boolean {
+  const value = line.trim();
+  if (value.length < 2 || value.length > 80) return false;
+  if (isPageNumberLine(value)) return false;
+  if (/^\s*\|.*\|\s*$/.test(value)) return false;
+  if (/^(?:[-*•]|\d+[.)]|[가-힣][.)]|[①-⑳])\s+/.test(value)) return false;
+  return !/[.!?。]$/.test(value);
+}
+
+function hasSeparatedOccurrences(positions: number[]): boolean {
+  if (positions.length < 3) return false;
+
+  let separatedCount = 1;
+  let previousPosition = positions[0];
+  for (const position of positions.slice(1)) {
+    if (position - previousPosition < 8) continue;
+    separatedCount += 1;
+    previousPosition = position;
+  }
+
+  return separatedCount >= 3;
+}
+
+/**
+ * 페이지마다 반복되는 짧은 머리글/바닥글은 첫 등장만 남긴다.
+ * 페이지 번호와 고립된 반복 업무 문구는 판단 근거로만 사용하고 보존한다.
+ */
+function removeRepeatedPageDecorations(text: string): string {
+  const lines = text.split('\n');
+  const nonEmptyLines = lines
+    .map((line, lineIndex) => ({
+      lineIndex,
+      value: line.trim().replace(/\s+/g, ' '),
+    }))
+    .filter(({ value }) => value.length > 0);
+
+  const positionsByValue = new Map<string, number[]>();
+  const pageNumberPositions: number[] = [];
+
+  nonEmptyLines.forEach(({ value }, position) => {
+    const positions = positionsByValue.get(value) ?? [];
+    positions.push(position);
+    positionsByValue.set(value, positions);
+    if (isPageNumberLine(value)) pageNumberPositions.push(position);
+  });
+
+  const decorationValues = new Set<string>();
+
+  for (const [value, positions] of positionsByValue) {
+    if (!isShortDecorationCandidate(value)) continue;
+    if (!hasSeparatedOccurrences(positions)) continue;
+
+    const nearPageNumberCount = positions.filter((position) =>
+      pageNumberPositions.some(
+        (pagePosition) => Math.abs(pagePosition - position) <= 3,
+      ),
+    ).length;
+
+    if (nearPageNumberCount >= 2) decorationValues.add(value);
+  }
+
+  for (const windowSize of [3, 2]) {
+    const windows = new Map<
+      string,
+      { positions: number[]; values: string[] }
+    >();
+
+    for (
+      let start = 0;
+      start <= nonEmptyLines.length - windowSize;
+      start += 1
+    ) {
+      const window = nonEmptyLines.slice(start, start + windowSize);
+      const values = window.map(({ value }) => value);
+      if (!values.every(isShortDecorationCandidate)) continue;
+
+      const key = values.join('\u0000');
+      const record = windows.get(key) ?? { positions: [], values };
+      record.positions.push(start);
+      windows.set(key, record);
+    }
+
+    for (const { positions, values } of windows.values()) {
+      if (!hasSeparatedOccurrences(positions)) continue;
+      values.forEach((value) => decorationValues.add(value));
+    }
+  }
+
+  if (decorationValues.size === 0) return text;
+
+  const preservedValues = new Set<string>();
+  return lines
+    .filter((line) => {
+      const value = line.trim().replace(/\s+/g, ' ');
+      if (!decorationValues.has(value)) return true;
+      if (preservedValues.has(value)) return false;
+      preservedValues.add(value);
+      return true;
+    })
+    .join('\n');
+}
+
 /**
  * 개선된 재귀적 청킹 (Recursive Character Text Splitter)
  * - 구분자 우선순위: \n\n -> \n -> . -> 공백 -> 글자
@@ -469,6 +576,10 @@ function basePreprocess(text: string): { originalLength: number; processed: stri
   processed = removeSpecialCharacters(processed);
 
   // 2. 공백 정규화
+  processed = normalizeWhitespace(processed);
+
+  // 3. 페이지마다 반복되는 짧은 머리글/바닥글 정리 (페이지 번호는 보존)
+  processed = removeRepeatedPageDecorations(processed);
   processed = normalizeWhitespace(processed);
 
   return { originalLength, processed };
