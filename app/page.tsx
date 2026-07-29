@@ -360,10 +360,11 @@ export default function Home() {
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h1 className="text-3xl font-bold tracking-tight">
-                문서전처리(MISO RAG 투입용 TXT 제작 도구)
+                문서 전처리
               </h1>
               <p className="text-muted-foreground mt-1">
-                사내 문서를 MISO RAG에 바로 등록할 수 있는 TXT 파일로 정리합니다.
+                사내 문서를 MISO RAG에 바로 등록할 수 있는 RAG 투입용 TXT 제작 도구입니다.
+                전처리를 진행한 후 TXT 파일로 정리합니다.
               </p>
             </div>
 
@@ -771,7 +772,7 @@ export default function Home() {
                     <CardDescription className="mt-1.5">
                       {isEditMode 
                         ? '텍스트를 수정하고 저장 버튼을 클릭하세요' 
-                        : '시각화로 결과를 확인하고, 필요시 수정하세요'}
+                        : '시각화로 결과를 확인하고 필요하면 수정하세요. 아래 청크 사이의 구분선을 위아래로 드래그하면 두 청크 사이의 내용 경계를 조정할 수 있습니다.'}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-3">
