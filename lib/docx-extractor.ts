@@ -32,6 +32,12 @@ const INLINE_TEXT_ELEMENTS = new Set([
 const TEXT_CONTAINER_ELEMENTS = new Set(['p']);
 const TEXT_BOUNDARY_ELEMENTS = new Set(['p']);
 const TABLE_SECTION_ELEMENTS = new Set(['thead', 'tbody', 'tfoot']);
+const TABLE_CELL_ELEMENTS = new Set(['th', 'td']);
+
+export const DOCX_MAX_LOGICAL_TABLE_ROWS = 5_000;
+export const DOCX_MAX_LOGICAL_TABLE_COLUMNS = 512;
+export const DOCX_MAX_LOGICAL_TABLE_CELLS = 100_000;
+const DOCX_TABLE_LIMIT_ERROR = 'DOCX table exceeds safe logical grid limits.';
 
 function sourceFormat(fileName: string): string {
   const match = /\.([^.]+)$/u.exec(fileName.trim());
@@ -81,7 +87,10 @@ function tableRows(table: Element): Element[] {
   const visit = (node: Node): void => {
     for (const child of childNodes(node)) {
       const name = elementName(child);
-      if (name === 'tr') rows.push(child as Element);
+      if (name === 'tr') {
+        if (rows.length >= DOCX_MAX_LOGICAL_TABLE_ROWS) throw new Error(DOCX_TABLE_LIMIT_ERROR);
+        rows.push(child as Element);
+      }
       else if (TABLE_SECTION_ELEMENTS.has(name)) visit(child);
     }
   };
@@ -90,8 +99,17 @@ function tableRows(table: Element): Element[] {
 }
 
 function tableSpan(cell: Element, attribute: 'rowspan' | 'colspan'): number {
-  const value = Number.parseInt(cell.getAttribute(attribute) ?? '', 10);
-  return Number.isFinite(value) && value > 0 ? value : 1;
+  const rawValue = cell.getAttribute(attribute);
+  if (rawValue === null || rawValue.trim() === '') return 1;
+  const normalized = rawValue.trim();
+  if (!/^[1-9]\d*$/u.test(normalized)) throw new Error(DOCX_TABLE_LIMIT_ERROR);
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value)) throw new Error(DOCX_TABLE_LIMIT_ERROR);
+  const limit = attribute === 'rowspan'
+    ? DOCX_MAX_LOGICAL_TABLE_ROWS
+    : DOCX_MAX_LOGICAL_TABLE_COLUMNS;
+  if (value > limit) throw new Error(DOCX_TABLE_LIMIT_ERROR);
+  return value;
 }
 
 function columnLabel(column: number): string {
@@ -113,44 +131,93 @@ function structuredTable(table: Element): {
   rows: string[][];
   merges: NonNullable<DocumentBlock['merges']>;
 } {
-  const rows: Array<Array<string | undefined>> = [];
-  const merges: NonNullable<DocumentBlock['merges']> = [];
+  interface ActiveSpan {
+    startColumn: number;
+    endColumn: number;
+    endRow: number;
+  }
+  interface CellPlacement extends ActiveSpan {
+    cell: Element;
+    startRow: number;
+  }
 
-  tableRows(table).forEach((row, rowIndex) => {
-    rows[rowIndex] ??= [];
+  const physicalRows = tableRows(table);
+  const placements: CellPlacement[] = [];
+  let activeSpans: ActiveSpan[] = [];
+  let logicalRows = physicalRows.length;
+  let logicalColumns = 0;
+
+  physicalRows.forEach((row, rowIndex) => {
+    activeSpans = activeSpans.filter((span) => span.endRow >= rowIndex);
     let column = 0;
-    for (const cell of directChildren(row, new Set(['th', 'td']))) {
-      while (rows[rowIndex][column] !== undefined) column += 1;
+    for (const cell of directChildren(row, TABLE_CELL_ELEMENTS)) {
       const rowspan = tableSpan(cell, 'rowspan');
       const colspan = tableSpan(cell, 'colspan');
-      const endRow = rowIndex + rowspan - 1;
-      const endColumn = column + colspan - 1;
-
-      for (let targetRow = rowIndex; targetRow <= endRow; targetRow += 1) {
-        rows[targetRow] ??= [];
-        for (let targetColumn = column; targetColumn <= endColumn; targetColumn += 1) {
-          if (targetRow === rowIndex && targetColumn === column) {
-            rows[targetRow][targetColumn] = safeText(cell, new Set(['table']));
-          } else if (rows[targetRow][targetColumn] === undefined) {
-            rows[targetRow][targetColumn] = '';
-          }
+      while (true) {
+        const candidateEnd = column + colspan - 1;
+        if (candidateEnd >= DOCX_MAX_LOGICAL_TABLE_COLUMNS) {
+          throw new Error(DOCX_TABLE_LIMIT_ERROR);
         }
+        const overlaps = activeSpans.filter(
+          (span) => span.startColumn <= candidateEnd && span.endColumn >= column,
+        );
+        if (overlaps.length === 0) break;
+        column = Math.max(...overlaps.map((span) => span.endColumn + 1));
       }
 
-      if (rowspan > 1 || colspan > 1) {
-        merges.push({
-          range: cellRange(rowIndex, column, endRow, endColumn),
-          start: { row: rowIndex, column },
-          end: { row: endRow, column: endColumn },
-        });
+      const endRow = rowIndex + rowspan - 1;
+      const endColumn = column + colspan - 1;
+      if (endRow >= DOCX_MAX_LOGICAL_TABLE_ROWS) {
+        throw new Error(DOCX_TABLE_LIMIT_ERROR);
+      }
+      const placement = {
+        cell,
+        startRow: rowIndex,
+        startColumn: column,
+        endRow,
+        endColumn,
+      };
+      placements.push(placement);
+      if (rowspan > 1) {
+        activeSpans.push(placement);
+      }
+
+      logicalRows = Math.max(logicalRows, endRow + 1);
+      logicalColumns = Math.max(logicalColumns, endColumn + 1);
+      if (logicalRows * logicalColumns > DOCX_MAX_LOGICAL_TABLE_CELLS) {
+        throw new Error(DOCX_TABLE_LIMIT_ERROR);
       }
       column = endColumn + 1;
     }
   });
 
-  const width = rows.reduce((maximum, row) => Math.max(maximum, row.length), 0);
+  const rows = Array.from(
+    { length: logicalRows },
+    () => Array<string>(logicalColumns).fill(''),
+  );
+  for (const placement of placements) {
+    rows[placement.startRow][placement.startColumn] = safeText(
+      placement.cell,
+      new Set(['table']),
+    );
+  }
+  const merges: NonNullable<DocumentBlock['merges']> = placements
+    .filter((placement) => (
+      placement.endRow > placement.startRow || placement.endColumn > placement.startColumn
+    ))
+    .map((placement) => ({
+      range: cellRange(
+        placement.startRow,
+        placement.startColumn,
+        placement.endRow,
+        placement.endColumn,
+      ),
+      start: { row: placement.startRow, column: placement.startColumn },
+      end: { row: placement.endRow, column: placement.endColumn },
+    }));
+
   return {
-    rows: rows.map((row) => Array.from({ length: width }, (_, column) => row[column] ?? '')),
+    rows,
     merges,
   };
 }
