@@ -13,10 +13,10 @@ export const LOCAL_TEXT_EXTENSIONS = [
 ] as const;
 
 export const LOCAL_EXCEL_EXTENSIONS = ['xlsx', 'xls', 'ods'] as const;
+export const LOCAL_DOCX_EXTENSIONS = ['docx'] as const;
 export const MISO_DOCUMENT_EXTENSIONS = [
   'pdf',
   'html',
-  'docx',
   'pptx',
   'ppt',
 ] as const;
@@ -32,11 +32,13 @@ export const MISO_IMAGE_EXTENSIONS = [
 export type FileProcessingRoute =
   | 'local-text'
   | 'local-excel'
+  | 'local-docx'
   | 'miso'
   | 'unsupported';
 
 const localTextExtensions = new Set<string>(LOCAL_TEXT_EXTENSIONS);
 const localExcelExtensions = new Set<string>(LOCAL_EXCEL_EXTENSIONS);
+const localDocxExtensions = new Set<string>(LOCAL_DOCX_EXTENSIONS);
 const misoExtensions = new Set<string>([
   ...MISO_DOCUMENT_EXTENSIONS,
   ...MISO_IMAGE_EXTENSIONS,
@@ -50,6 +52,7 @@ export function getFileProcessingRoute(fileName: string): FileProcessingRoute {
   const extension = getFileExtension(fileName);
   if (localTextExtensions.has(extension)) return 'local-text';
   if (localExcelExtensions.has(extension)) return 'local-excel';
+  if (localDocxExtensions.has(extension)) return 'local-docx';
   if (misoExtensions.has(extension)) return 'miso';
   return 'unsupported';
 }
@@ -61,6 +64,7 @@ export function isFileSizeAllowed(fileSize: number): boolean {
 export const FILE_INPUT_ACCEPT = [
   ...LOCAL_TEXT_EXTENSIONS,
   ...LOCAL_EXCEL_EXTENSIONS,
+  ...LOCAL_DOCX_EXTENSIONS,
   ...MISO_DOCUMENT_EXTENSIONS,
   ...MISO_IMAGE_EXTENSIONS,
 ]
