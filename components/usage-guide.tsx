@@ -1,7 +1,5 @@
 import {
   AlertTriangle,
-  ArrowRight,
-  BrainCircuit,
   CheckCircle2,
   Database,
   Download,
@@ -122,58 +120,74 @@ export function UsageGuide() {
     <section className="space-y-6" aria-labelledby="usage-guide-title">
       <Card className="border-primary/40 bg-primary/[0.03]">
         <CardHeader>
-          <div className="mb-1 flex items-center gap-2 text-primary">
-            <BrainCircuit className="h-5 w-5" />
-            <span className="text-sm font-semibold">먼저 알아두세요</span>
-          </div>
           <CardTitle id="usage-guide-title">왜 문서 전처리가 필요한가요?</CardTitle>
-          <CardDescription className="max-w-4xl text-sm leading-6">
-            MISO RAG에 문서를 등록했다고 해서 AI가 문서 전체를 매번 처음부터 끝까지 읽는 것은 아닙니다.
-            문서는 작은 청크로 나뉘고, 질문과 관련 있다고 검색된 일부 청크만 AI에게 전달됩니다.
-            따라서 청크의 경계와 제목 문맥이 답변 품질을 좌우합니다.
+          <CardDescription className="text-sm leading-6">
+            문서를 등록하는 것만으로 AI가 그 안의 모든 내용을 완전히 기억하고 이해하는 것은 아닙니다.
+            AI가 필요한 내용을 정확히 찾을 수 있도록 문서의 구조와 내용 단위를 정리해야 합니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          <div className="flex flex-col gap-2 rounded-lg border bg-background p-4 text-sm font-medium sm:flex-row sm:items-center sm:justify-center">
-            {['원본 문서', '청크 분할', '관련 청크 검색', 'AI 답변'].map((label, index, items) => (
-              <div key={label} className="contents">
-                <span className="rounded-md bg-muted px-3 py-2 text-center">{label}</span>
-                {index < items.length - 1 && (
-                  <ArrowRight className="mx-auto h-4 w-4 shrink-0 rotate-90 text-muted-foreground sm:rotate-0" />
-                )}
+          <Alert className="border-amber-300 bg-amber-50/70 dark:bg-amber-950/20">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            <AlertTitle>
+              MISO RAG는 문서를 등록만 하면 모든 지식을 습득하는 만능 도구가 아닙니다.
+            </AlertTitle>
+            <AlertDescription className="leading-6">
+              질문할 때마다 문서 전체를 읽는 것이 아니라, 질문과 관련 있다고 판단한 일부 내용만 찾아 AI에게 전달합니다.
+              필요한 내용이 잘못 나뉘거나 검색되지 않으면 문서 안에 정답이 있어도 답변에 활용되지 않을 수 있습니다.
+            </AlertDescription>
+          </Alert>
+
+          <div className="rounded-lg border bg-background p-4 sm:p-5">
+            <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Badge className="w-fit">청크란?</Badge>
+              <p className="text-sm leading-6 text-muted-foreground">
+                AI가 검색하고 참고하기 쉽도록 문서를 나눈 작은 내용 단위입니다.
+                조문 하나, 표의 일부, 설명서의 한 절 등이 하나의 청크가 될 수 있습니다.
+              </p>
+            </div>
+
+            <ol className="grid gap-3 md:grid-cols-3">
+              <li className="min-w-0 rounded-lg bg-muted/50 p-4">
+                <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">1</span>
+                <p className="font-semibold">문서를 작은 내용 단위로 나눕니다.</p>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                  제목과 문맥이 이어지도록 관련 내용을 함께 묶습니다.
+                </p>
+              </li>
+              <li className="min-w-0 rounded-lg bg-muted/50 p-4">
+                <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">2</span>
+                <p className="font-semibold">질문과 가까운 청크만 찾습니다.</p>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                  문서 전체가 아니라 관련성이 높은 일부만 선택합니다.
+                </p>
+              </li>
+              <li className="min-w-0 rounded-lg bg-muted/50 p-4">
+                <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">3</span>
+                <p className="font-semibold">검색된 내용으로 답변합니다.</p>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                  검색되지 않은 내용은 답변에 사용되지 않을 수 있습니다.
+                </p>
+              </li>
+            </ol>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border bg-background">
+            {[
+              ['내용 단위가 너무 크면', '서로 다른 주제가 섞여 정확한 내용을 찾기 어려워집니다.'],
+              ['내용 단위가 너무 작거나 제목이 없으면', '조항·업무·표의 소속 문맥이 사라져 의미를 잘못 이해할 수 있습니다.'],
+              ['추출 오류와 반복 문구가 남으면', '실제 내용 대신 머릿글·깨진 표·잘못 인식된 문장이 검색될 수 있습니다.'],
+            ].map(([title, description]) => (
+              <div key={title} className="flex flex-col gap-1 border-b p-4 last:border-b-0">
+                <p className="font-semibold">{title}</p>
+                <p className="text-sm leading-6 text-muted-foreground">{description}</p>
               </div>
             ))}
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-lg border bg-background p-4">
-              <p className="font-semibold">청크가 너무 크면</p>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                서로 다른 주제가 한 덩어리에 섞여 정확한 내용을 찾기 어려워집니다.
-              </p>
-            </div>
-            <div className="rounded-lg border bg-background p-4">
-              <p className="font-semibold">청크가 너무 작거나 제목이 없으면</p>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                조항·업무·표의 소속 문맥이 사라져 AI가 내용의 의미를 잘못 이해할 수 있습니다.
-              </p>
-            </div>
-            <div className="rounded-lg border bg-background p-4">
-              <p className="font-semibold">추출 오류와 반복 문구가 남으면</p>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                실제 답변에 필요한 내용 대신 머릿글·깨진 표·잘못 인식된 문장이 검색될 수 있습니다.
-              </p>
-            </div>
-          </div>
-
-          <Alert>
-            <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>문서 등록 성공이 곧 지식 활용 성공은 아닙니다.</AlertTitle>
-            <AlertDescription className="leading-6">
-              텍스트 확인과 결과 검토 단계에서 누락, 제목, 표, 청크 경계를 반드시 확인하세요.
-              전처리는 AI가 필요한 내용을 정확히 찾아 이해할 수 있게 만드는 작업입니다.
-            </AlertDescription>
-          </Alert>
+          <p className="rounded-lg bg-primary/10 px-4 py-3 text-sm font-medium leading-6">
+            따라서 텍스트 확인과 결과 검토 단계에서 누락, 제목, 표, 내용 단위가 자연스럽게 나뉘었는지 반드시 확인해야 합니다.
+          </p>
         </CardContent>
       </Card>
 
