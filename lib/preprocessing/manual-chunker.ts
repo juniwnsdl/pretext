@@ -21,8 +21,11 @@ type ManualLineKind = 'section' | 'step' | 'safety' | 'paragraph';
 
 interface TextUnit {
   kind: 'text';
+  role: 'step' | 'instruction' | 'orphan-safety';
   text: string;
   sourceIds: string[];
+  safetyPrefix?: string;
+  safetySuffix?: string;
 }
 
 interface TableUnit {
@@ -38,12 +41,13 @@ interface ManualSection {
   headingSourceIds: string[];
   units: ManualUnit[];
   pendingSafety: Array<{ text: string; sourceId: string }>;
+  warnings: PreprocessIssue[];
 }
 
 const safetyLabel = /^(?:\[\s*(?:주의|경고|위험|안전|중요|필독)\s*\]|(?:주의|경고|위험|안전|중요|필독)\s*[:：]|※)/u;
-const numberedLabel = /^\s*(?:\d+\.\s+|\d+\)\s+|\d+-\d+\s+|[가-힣]\)\s+|[①-⑳]\s*|Step\s*\d+(?:\s*[:.)-])?\s+|단계\s*\d+(?:\s*[:.)-])?\s+)/iu;
+const numberedPrefix = /^\s*(?:\d+\.\s+|\d+\)\s+|\d+-\d+\s+|[가-힣]\)\s+|[①-⑳]\s*|Step\s*\d+(?:\s*[:.)-])?\s+|단계\s*\d+(?:\s*[:.)-])?\s+)/iu;
 const imperativeEnding = /(?:다|시오|세요)\.\s*$/u;
-const bareSectionLabel = /^(?:개요|목적|범위|준비(?:\s*사항)?|절차|작업\s*절차|점검(?:\s*사항)?|기동|운전|종료|주의(?:\s*사항)?|안전\s*수칙)\s*$/u;
+const knownSectionTitle = /^(?:(?:작업\s*)?개요|목적|범위|준비(?:\s*사항)?|절차|작업\s*절차|점검(?:\s*사항)?|기동|운전|종료|주의(?:\s*사항)?|안전\s*수칙)(?:입니다)?\.?\s*$/u;
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -64,8 +68,10 @@ export function classifyManualLine(line: string): ManualLineKind {
   if (!trimmed) return 'paragraph';
   if (safetyLabel.test(trimmed)) return 'safety';
   if (/^#{1,6}\s+\S/u.test(trimmed)) return 'section';
-  if (bareSectionLabel.test(trimmed)) return 'section';
-  if (numberedLabel.test(line)) {
+  if (knownSectionTitle.test(trimmed)) return 'section';
+  const numbered = trimmed.match(numberedPrefix);
+  if (numbered) {
+    if (knownSectionTitle.test(trimmed.slice(numbered[0].length).trim())) return 'section';
     return imperativeEnding.test(trimmed) ? 'step' : 'section';
   }
   return 'paragraph';
@@ -100,10 +106,18 @@ function headingPathForBlock(block: DocumentBlock): string[] {
     : [...block.headingPath, text];
 }
 
-function appendText(section: ManualSection, text: string, sourceIds: string[]): void {
+function appendText(
+  section: ManualSection,
+  text: string,
+  sourceIds: string[],
+  role: TextUnit['role'] = 'instruction',
+  safetyPrefix?: string,
+): void {
   const previous = section.units.at(-1);
   if (
     previous?.kind === 'text' &&
+    previous.role === 'instruction' &&
+    role === 'instruction' &&
     previous.sourceIds.length === 1 &&
     sourceIds.length === 1 &&
     previous.sourceIds[0] === sourceIds[0]
@@ -111,41 +125,80 @@ function appendText(section: ManualSection, text: string, sourceIds: string[]): 
     previous.text += `\n${text}`;
     return;
   }
-  section.units.push({ kind: 'text', text, sourceIds: unique(sourceIds) });
+  section.units.push({ kind: 'text', role, text, sourceIds: unique(sourceIds), safetyPrefix });
 }
 
-function flushPendingSafety(section: ManualSection): void {
+function pendingSafetyText(section: ManualSection): string {
+  return section.pendingSafety.map((entry) => entry.text).join('\n');
+}
+
+function pendingSafetySourceIds(section: ManualSection): string[] {
+  return section.pendingSafety.map((entry) => entry.sourceId);
+}
+
+function appendUnpairedSafety(section: ManualSection): void {
   if (section.pendingSafety.length === 0) return;
+  const text = pendingSafetyText(section);
+  const sourceIds = pendingSafetySourceIds(section);
   appendText(
     section,
-    section.pendingSafety.map((entry) => entry.text).join('\n'),
-    section.pendingSafety.map((entry) => entry.sourceId),
+    `${text}\n[BLOCKED: safety label has no adjacent instruction.]`,
+    sourceIds,
+    'orphan-safety',
   );
+  section.warnings.push({
+    code: 'manual-safety-without-adjacent-instruction',
+    severity: 'error',
+    message: `Safety label has no adjacent instruction: ${text}`,
+    locations: unique(sourceIds),
+  });
   section.pendingSafety = [];
+}
+
+function appendPendingSafetyToInstruction(
+  section: ManualSection,
+  text: string,
+  sourceId: string,
+  role: 'step' | 'instruction',
+): void {
+  const prefix = pendingSafetyText(section);
+  const sourceIds = unique([...pendingSafetySourceIds(section), sourceId]);
+  section.pendingSafety = [];
+  appendText(
+    section,
+    prefix ? `${prefix}\n${text}` : text,
+    sourceIds,
+    role,
+    prefix || undefined,
+  );
 }
 
 function appendRawLine(section: ManualSection, line: string, sourceId: string): void {
   const kind = classifyManualLine(line);
   if (kind === 'safety') {
+    const previous = section.units.at(-1);
+    if (previous?.kind === 'text' && previous.role === 'step' && section.pendingSafety.length === 0) {
+      previous.text += `\n${line}`;
+      previous.sourceIds = unique([...previous.sourceIds, sourceId]);
+      previous.safetySuffix = `${previous.safetySuffix ?? ''}\n${line}`;
+      return;
+    }
     section.pendingSafety.push({ text: line, sourceId });
     return;
   }
   if (kind === 'step') {
-    const step = [...section.pendingSafety.map((entry) => entry.text), line].join('\n');
-    const sourceIds = unique([
-      ...section.pendingSafety.map((entry) => entry.sourceId),
-      sourceId,
-    ]);
-    section.pendingSafety = [];
-    section.units.push({ kind: 'text', text: step, sourceIds });
+    appendPendingSafetyToInstruction(section, line, sourceId, 'step');
     return;
   }
-  flushPendingSafety(section);
-  appendText(section, line, [sourceId]);
+  if (!line.trim() && section.pendingSafety.length > 0) {
+    appendText(section, line, [sourceId]);
+    return;
+  }
+  appendPendingSafetyToInstruction(section, line, sourceId, 'instruction');
 }
 
 function createSection(path: string[], headingSourceIds: string[] = []): ManualSection {
-  return { path, headingSourceIds, units: [], pendingSafety: [] };
+  return { path, headingSourceIds, units: [], pendingSafety: [], warnings: [] };
 }
 
 function tableFromRawLines(lines: string[], sourceId: string, index: number): DocumentBlock | null {
@@ -159,7 +212,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
   let tableIndex = 0;
 
   const startSection = (path: string[], headingSourceIds: string[] = []): void => {
-    flushPendingSafety(current);
+    appendUnpairedSafety(current);
     sections.push(current);
     current = createSection(path, headingSourceIds);
   };
@@ -175,7 +228,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
 
     if (block.kind === 'table') {
       if (block.headingPath.length > 0) ensurePath(block.headingPath);
-      flushPendingSafety(current);
+      appendUnpairedSafety(current);
       current.units.push({ kind: 'table', block, sourceIds: [block.id] });
       continue;
     }
@@ -184,8 +237,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
       if (block.headingPath.length > 0) ensurePath(block.headingPath);
       const text = block.text ?? '';
       if (text) {
-        flushPendingSafety(current);
-        current.units.push({ kind: 'text', text, sourceIds: [block.id] });
+        appendPendingSafetyToInstruction(current, text, block.id, 'instruction');
       }
       continue;
     }
@@ -204,7 +256,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
           index += 1;
         }
         index -= 1;
-        flushPendingSafety(current);
+        appendUnpairedSafety(current);
         const table = tableFromRawLines(tableLines, block.id, ++tableIndex);
         if (table) current.units.push({ kind: 'table', block: table, sourceIds: [block.id] });
         else appendText(current, tableLines.join('\n'), [block.id]);
@@ -218,7 +270,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
       }
     }
   }
-  flushPendingSafety(current);
+  appendUnpairedSafety(current);
   sections.push(current);
   return sections;
 }
@@ -236,6 +288,44 @@ function claimSourceIds(candidates: string[], claimed: Set<string>): string[] {
 
 function draft(body: string, contextLines: string[], sourceIds: string[]): ChunkDraft {
   return { body, contextLines, sourceBlockIds: sourceIds, warnings: [] };
+}
+
+function splitOversizedStep(unit: TextUnit, limit: number): string[] | null {
+  if (unit.text.length <= limit) return [unit.text];
+  if (!unit.safetyPrefix && !unit.safetySuffix) {
+    return splitTextPreservingSeparators(unit.text, limit);
+  }
+
+  let instruction = unit.text;
+  let prefix = '';
+  let suffix = '';
+  if (unit.safetyPrefix) {
+    const afterPrefix = instruction.slice(unit.safetyPrefix.length);
+    const separator = afterPrefix.startsWith('\n') ? '\n' : '';
+    prefix = `${unit.safetyPrefix}${separator}`;
+    instruction = afterPrefix.slice(separator.length);
+  }
+  if (unit.safetySuffix) {
+    suffix = unit.safetySuffix;
+    instruction = instruction.endsWith(suffix)
+      ? instruction.slice(0, -suffix.length)
+      : instruction;
+  }
+
+  const firstLimit = limit - prefix.length;
+  const lastLimit = limit - suffix.length;
+  if (firstLimit < 1 || lastLimit < 1 || !instruction) return null;
+  const instructionFragments = splitTextPreservingSeparators(
+    instruction,
+    Math.min(firstLimit, lastLimit),
+  );
+  if (instructionFragments.length === 1 && prefix.length + instruction.length + suffix.length > limit) {
+    instructionFragments.splice(0, 1, instruction.slice(0, -1), instruction.slice(-1));
+  }
+  const first = instructionFragments.shift();
+  const last = instructionFragments.pop();
+  if (!first || !last) return first ? [`${prefix}${first}${suffix}`] : null;
+  return [`${prefix}${first}`, ...instructionFragments, `${last}${suffix}`];
 }
 
 function renderSection(
@@ -256,7 +346,7 @@ function renderSection(
   const contextLines = sectionContext(fileName, section.path);
   const limit = bodyLimit(contextLines);
   const drafts: ChunkDraft[] = [];
-  const warnings: PreprocessIssue[] = [];
+  const warnings: PreprocessIssue[] = [...section.warnings];
   let initialSources = [...carriedHeadingIds, ...section.headingSourceIds];
   let body = '';
   let bodySources: string[] = [];
@@ -286,9 +376,27 @@ function renderSection(
       continue;
     }
 
-    const fragments = unit.text.length <= limit
-      ? [unit.text]
-      : splitTextPreservingSeparators(unit.text, limit);
+    if (unit.role !== 'step' && unit.text.length > limit) {
+      warnings.push({
+        code: 'manual-non-step-exceeds-limit',
+        severity: 'error',
+        message: 'A non-step manual unit exceeds the chunk limit and cannot be split at a step boundary.',
+        locations: unit.sourceIds,
+      });
+      continue;
+    }
+    const fragments = unit.role === 'step'
+      ? splitOversizedStep(unit, limit)
+      : [unit.text];
+    if (!fragments) {
+      warnings.push({
+        code: 'manual-step-safety-prefix-exceeds-limit',
+        severity: 'error',
+        message: 'Safety text leaves no room for the adjacent step in one chunk.',
+        locations: unit.sourceIds,
+      });
+      continue;
+    }
     fragments.forEach((fragment, index) => {
       const candidates = index === 0
         ? [...initialSources, ...unit.sourceIds]
