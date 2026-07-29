@@ -128,8 +128,7 @@ export function UsageGuide() {
         </CardHeader>
         <CardContent className="space-y-5">
           <Alert className="border-amber-300 bg-amber-50/70 dark:bg-amber-950/20">
-            <AlertTriangle className="h-4 w-4 text-amber-600" />
-            <AlertTitle>
+            <AlertTitle className="line-clamp-none leading-6">
               MISO RAG는 문서를 등록만 하면 모든 지식을 습득하는 만능 도구가 아닙니다.
             </AlertTitle>
             <AlertDescription className="leading-6">
@@ -139,32 +138,43 @@ export function UsageGuide() {
           </Alert>
 
           <div className="rounded-lg border bg-background p-4 sm:p-5">
-            <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Badge className="w-fit">청크란?</Badge>
-              <p className="text-sm leading-6 text-muted-foreground">
-                AI가 검색하고 참고하기 쉽도록 문서를 나눈 작은 내용 단위입니다.
+            <div className="mb-5 rounded-lg bg-primary/5 p-4">
+              <p className="font-semibold">청크란 무엇인가요?</p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                청크(chunk)는 RAG가 검색하는 기본 단위로, 긴 문서를 의미가 이어지는 작은 내용 묶음으로 나눈 것입니다.
                 조문 하나, 표의 일부, 설명서의 한 절 등이 하나의 청크가 될 수 있습니다.
+              </p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                질문이 들어오면 MISO RAG는 문서 전체가 아니라 관련성이 높은 청크를 찾아 AI에게 전달합니다.
+                좋은 청크는 한 가지 주제를 담고 제목·조문 번호·표 머리말 같은 맥락을 포함해,
+                해당 청크만 읽어도 어떤 내용인지 이해할 수 있어야 합니다.
               </p>
             </div>
 
             <ol className="grid gap-3 md:grid-cols-3">
               <li className="min-w-0 rounded-lg bg-muted/50 p-4">
-                <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">1</span>
-                <p className="font-semibold">문서를 작은 내용 단위로 나눕니다.</p>
+                <div className="flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">1</span>
+                  <p className="font-semibold">문서를 작은 내용 단위로 나눕니다.</p>
+                </div>
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">
                   제목과 문맥이 이어지도록 관련 내용을 함께 묶습니다.
                 </p>
               </li>
               <li className="min-w-0 rounded-lg bg-muted/50 p-4">
-                <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">2</span>
-                <p className="font-semibold">질문과 가까운 청크만 찾습니다.</p>
+                <div className="flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">2</span>
+                  <p className="font-semibold">질문과 가까운 청크만 찾습니다.</p>
+                </div>
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">
                   문서 전체가 아니라 관련성이 높은 일부만 선택합니다.
                 </p>
               </li>
               <li className="min-w-0 rounded-lg bg-muted/50 p-4">
-                <span className="mb-3 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">3</span>
-                <p className="font-semibold">검색된 내용으로 답변합니다.</p>
+                <div className="flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">3</span>
+                  <p className="font-semibold">검색된 내용으로 답변합니다.</p>
+                </div>
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">
                   검색되지 않은 내용은 답변에 사용되지 않을 수 있습니다.
                 </p>
