@@ -26,6 +26,10 @@ import {
   MISO_DOCUMENT_EXTENSIONS,
   MISO_IMAGE_EXTENSIONS,
 } from '@/lib/file-processing-policy';
+import {
+  DOCUMENT_HANDLING_SECURITY_NOTICE,
+  DOCUMENT_HANDLING_STAGES,
+} from '@/lib/document-handling-guide';
 
 const maxFileSizeMb = MAX_FILE_SIZE_BYTES / 1024 / 1024;
 
@@ -228,6 +232,47 @@ export function UsageGuide() {
               다운로드한 TXT의 실제 등록, 임베딩, 벡터 생성과 검색은 MISO RAG에서 진행합니다.
               이 페이지가 결과 파일을 RAG에 자동 등록하지는 않습니다.
             </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>어떤 방법으로 문서를 처리하면 되나요?</CardTitle>
+          <CardDescription className="leading-6">
+            대부분의 일반 문서는 이 전처리기만으로 충분합니다. 1번부터 시작하고, 처리하기 어려울 때만 다음 방법으로 넘어가세요.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <ol className="grid gap-3 lg:grid-cols-3">
+            {DOCUMENT_HANDLING_STAGES.map((stage) => (
+              <li
+                key={stage.id}
+                className={
+                  stage.id === 'assisted-processing'
+                    ? 'rounded-lg border border-amber-300 bg-amber-50/50 p-4 dark:bg-amber-950/15'
+                    : 'rounded-lg border p-4'
+                }
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+                    {stage.step}
+                  </span>
+                  <p className="font-semibold leading-6">{stage.title}</p>
+                </div>
+                <p className="text-sm leading-6 text-muted-foreground">{stage.description}</p>
+                <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
+                  {stage.examples.map((example) => (
+                    <li key={example}>{example}</li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ol>
+
+          <div className="rounded-lg bg-primary/10 px-4 py-3 text-sm leading-6">
+            <p className="font-semibold">기억하세요</p>
+            <p className="mt-1 text-muted-foreground">{DOCUMENT_HANDLING_SECURITY_NOTICE}</p>
           </div>
         </CardContent>
       </Card>
