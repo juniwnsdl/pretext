@@ -31,7 +31,8 @@ export interface PreprocessRequestError {
     | 'MISSING_INPUT'
     | 'EMPTY_INPUT'
     | 'INVALID_DOCUMENT'
-    | 'INVALID_BLOCK';
+    | 'INVALID_BLOCK'
+    | 'INPUT_TOO_LARGE';
   message: string;
 }
 
@@ -54,6 +55,18 @@ const EXTRACTION_METHODS = new Set<ExtractedDocument['extractionMethod']>([
   'user-edited',
 ]);
 
+// Public JSON budgets: table limits match the local DOCX logical-grid safety caps.
+export const PREPROCESS_MAX_DOCUMENT_BLOCKS = 10_000;
+export const PREPROCESS_MAX_WARNINGS = 1_000;
+export const PREPROCESS_MAX_HEADING_PATH_DEPTH = 64;
+export const PREPROCESS_MAX_TABLE_ROWS = 5_000;
+export const PREPROCESS_MAX_TABLE_COLUMNS = 512;
+export const PREPROCESS_MAX_TABLE_CELLS = 100_000;
+export const PREPROCESS_MAX_TABLE_MERGES = 10_000;
+export const PREPROCESS_MAX_ISSUE_LOCATIONS = 10_000;
+export const PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH = 50_000_000;
+export const PREPROCESS_MAX_AGGREGATE_STRUCTURE_ITEMS = 1_000_000;
+
 function failure(
   code: PreprocessRequestError['code'],
   message: string,
@@ -67,6 +80,90 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function exceedsDocumentBudgets(
+  document: Record<string, unknown>,
+  blocks: unknown[],
+  warnings: unknown[],
+): boolean {
+  if (
+    blocks.length > PREPROCESS_MAX_DOCUMENT_BLOCKS
+    || warnings.length > PREPROCESS_MAX_WARNINGS
+  ) {
+    return true;
+  }
+
+  let aggregateTextLength = 0;
+  let aggregateStructureItems = blocks.length + warnings.length;
+  const addText = (value: unknown): boolean => {
+    if (typeof value !== 'string') return false;
+    aggregateTextLength += value.length;
+    return aggregateTextLength > PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH;
+  };
+  const addStructure = (count: number): boolean => {
+    aggregateStructureItems += count;
+    return aggregateStructureItems > PREPROCESS_MAX_AGGREGATE_STRUCTURE_ITEMS;
+  };
+
+  if (addText(document.fileName) || addText(document.sourceFormat)) return true;
+
+  for (const warning of warnings) {
+    if (!isRecord(warning)) continue;
+    if (addText(warning.code) || addText(warning.message)) return true;
+    if (Array.isArray(warning.locations)) {
+      if (warning.locations.length > PREPROCESS_MAX_ISSUE_LOCATIONS) return true;
+      if (addStructure(warning.locations.length)) return true;
+      for (const location of warning.locations) {
+        if (addText(location)) return true;
+      }
+    }
+  }
+
+  for (const block of blocks) {
+    if (!isRecord(block)) continue;
+    if (
+      addText(block.id)
+      || addText(block.text)
+      || addText(block.sheetName)
+      || addText(block.tableId)
+    ) {
+      return true;
+    }
+    if (Array.isArray(block.headingPath)) {
+      if (block.headingPath.length > PREPROCESS_MAX_HEADING_PATH_DEPTH) return true;
+      if (addStructure(block.headingPath.length)) return true;
+      for (const pathEntry of block.headingPath) {
+        if (addText(pathEntry)) return true;
+      }
+    }
+
+    if (Array.isArray(block.rows)) {
+      if (block.rows.length > PREPROCESS_MAX_TABLE_ROWS) return true;
+      if (addStructure(block.rows.length)) return true;
+      let tableCells = 0;
+      for (const row of block.rows) {
+        if (!Array.isArray(row)) continue;
+        if (row.length > PREPROCESS_MAX_TABLE_COLUMNS) return true;
+        tableCells += row.length;
+        if (tableCells > PREPROCESS_MAX_TABLE_CELLS) return true;
+        if (addStructure(row.length)) return true;
+        for (const cell of row) {
+          if (addText(cell)) return true;
+        }
+      }
+    }
+
+    if (Array.isArray(block.merges)) {
+      if (block.merges.length > PREPROCESS_MAX_TABLE_MERGES) return true;
+      if (addStructure(block.merges.length)) return true;
+      for (const merge of block.merges) {
+        if (isRecord(merge) && addText(merge.range)) return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 /** Removes path components, control characters, and unsafe filename characters. */
@@ -183,8 +280,13 @@ function normalizeDocument(value: unknown):
     || !EXTRACTION_METHODS.has(value.extractionMethod as ExtractedDocument['extractionMethod'])
     || !Array.isArray(value.blocks)
     || !Array.isArray(value.warnings)
-    || !value.warnings.every(validIssue)
   ) {
+    return { ok: false, error: { code: 'INVALID_DOCUMENT', message: 'Document shape is invalid.' } };
+  }
+  if (exceedsDocumentBudgets(value, value.blocks, value.warnings)) {
+    return { ok: false, error: { code: 'INPUT_TOO_LARGE', message: 'Document exceeds preprocessing input limits.' } };
+  }
+  if (!value.warnings.every(validIssue)) {
     return { ok: false, error: { code: 'INVALID_DOCUMENT', message: 'Document shape is invalid.' } };
   }
   if (!value.blocks.every(validBlock)) {
@@ -236,6 +338,9 @@ export function normalizePreprocessRequest(input: unknown): PreprocessRequestRes
     }
     if (input.text.trim().length === 0) {
       return failure('EMPTY_INPUT', 'Text input must not be empty.');
+    }
+    if (input.text.length > PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH) {
+      return failure('INPUT_TOO_LARGE', 'Text input exceeds preprocessing input limits.');
     }
     document = {
       version: 1,

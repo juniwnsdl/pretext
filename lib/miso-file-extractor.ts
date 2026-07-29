@@ -17,7 +17,7 @@ interface DocxFile {
 
 interface DocxExtractionAdapters {
   local?: (buffer: ArrayBuffer, fileName: string) => Promise<ExtractedDocument>;
-  miso?: (file: File) => Promise<ExtractedDocument>;
+  miso?: (file: File, signal?: AbortSignal) => Promise<ExtractedDocument>;
 }
 
 interface ApiBody {
@@ -69,18 +69,62 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function abortError(): Error {
+  const error = new Error('File extraction was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError());
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (completion: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      completion();
+    };
+    const onAbort = (): void => settle(() => reject(abortError()));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    promise.then(
+      (value) => settle(() => resolve(value)),
+      (error) => settle(() => reject(error)),
+    );
+  });
+}
+
 /** Performs the existing two-request MISO file extraction flow without UI state. */
 export async function extractTextViaMiso(
   file: File,
   fetchImpl: FetchImpl = fetch,
+  signal?: AbortSignal,
 ): Promise<ExtractedDocument> {
+  throwIfAborted(signal);
   const uploadBody = new FormData();
   uploadBody.append('file', file);
   const uploadResponse = await fetchImpl('/api/miso/upload', {
     method: 'POST',
     body: uploadBody,
+    signal,
   });
-  const uploadResult = await readApiBody(uploadResponse);
+  throwIfAborted(signal);
+  const uploadResult = await raceWithAbort(readApiBody(uploadResponse), signal);
+  throwIfAborted(signal);
   const uploadError = envelopeMessage(uploadResult.error);
   if (!uploadResponse.ok || uploadResult.success === false || uploadError) {
     throw new Error(uploadError ?? apiMessage(uploadResult, 'File upload failed.'));
@@ -93,8 +137,11 @@ export async function extractTextViaMiso(
       fileId: uploadResult.fileId,
       fileName: uploadResult.fileName,
     }),
+    signal,
   });
-  const workflowResult = await readApiBody(workflowResponse);
+  throwIfAborted(signal);
+  const workflowResult = await raceWithAbort(readApiBody(workflowResponse), signal);
+  throwIfAborted(signal);
   const workflowError = envelopeMessage(workflowResult.error);
   if (!workflowResponse.ok || workflowResult.success === false || workflowError) {
     throw new Error(workflowError ?? apiMessage(workflowResult, 'File extraction failed.'));
@@ -124,19 +171,34 @@ export async function extractTextViaMiso(
 export async function extractDocxPreferLocal(
   file: File & DocxFile,
   adapters: DocxExtractionAdapters = {},
+  signal?: AbortSignal,
 ): Promise<ExtractedDocument> {
   const local = adapters.local ?? extractDocxDocument;
-  const miso = adapters.miso ?? extractTextViaMiso;
+  const miso = adapters.miso
+    ?? ((candidate: File, abortSignal?: AbortSignal) => (
+      extractTextViaMiso(candidate, fetch, abortSignal)
+    ));
   let localFailure: unknown;
 
   try {
-    return await local(await file.arrayBuffer(), file.name);
+    throwIfAborted(signal);
+    const localExtraction = (async () => {
+      const buffer = await raceWithAbort(file.arrayBuffer(), signal);
+      throwIfAborted(signal);
+      return local(buffer, file.name);
+    })();
+    return await raceWithAbort(localExtraction, signal);
   } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw isAbortError(error) ? error : abortError();
+    }
     localFailure = error;
   }
 
   try {
-    const document = await miso(file);
+    throwIfAborted(signal);
+    const document = await miso(file, signal);
+    throwIfAborted(signal);
     const warning: PreprocessIssue = {
       code: 'DOCX_FALLBACK',
       severity: 'warning',
@@ -144,6 +206,9 @@ export async function extractDocxPreferLocal(
     };
     return { ...document, warnings: [...document.warnings, warning] };
   } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      throw isAbortError(error) ? error : abortError();
+    }
     const misoFailure = error instanceof Error ? error : new Error(String(error));
     Object.defineProperty(misoFailure, 'localError', {
       configurable: true,

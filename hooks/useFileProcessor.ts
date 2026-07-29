@@ -320,16 +320,20 @@ export function useFileProcessor(): UseFileProcessorReturn {
     setStats(null);
   }, []);
 
-  const applyExtraction = useCallback((
-    document: ExtractedDocument,
-    options: ApplyExtractionOptions = {},
-  ): void => {
-    sourceDocumentRef.current = document;
-    setSourceDocument(document);
-    setInputTextState(renderDocumentPreview(document));
-    setExtractionIssues(document.warnings);
-    setTextEncoding(options.encoding ?? null);
-    setEncodingReviewRequired(options.encodingReviewRequired ?? false);
+  const invalidatePreprocessing = useCallback(() => {
+    processOperationRef.current += 1;
+    processAbortRef.current?.abort();
+    processAbortRef.current = null;
+  }, []);
+
+  const clearSourceState = useCallback(() => {
+    textFileRef.current = null;
+    sourceDocumentRef.current = null;
+    setSourceDocument(null);
+    setInputTextState('');
+    setTextEncoding(null);
+    setEncodingReviewRequired(false);
+    setExtractionIssues([]);
     clearResult();
   }, [clearResult]);
 
@@ -337,27 +341,38 @@ export function useFileProcessor(): UseFileProcessorReturn {
     fileOperationRef.current += 1;
     fileAbortRef.current?.abort();
     fileAbortRef.current = null;
-    processOperationRef.current += 1;
-    processAbortRef.current?.abort();
-    processAbortRef.current = null;
-  }, []);
+    invalidatePreprocessing();
+  }, [invalidatePreprocessing]);
+
+  const applyExtraction = useCallback((
+    document: ExtractedDocument,
+    options: ApplyExtractionOptions = {},
+  ): void => {
+    invalidatePreprocessing();
+    sourceDocumentRef.current = document;
+    setSourceDocument(document);
+    setInputTextState(renderDocumentPreview(document));
+    setExtractionIssues(document.warnings);
+    setTextEncoding(options.encoding ?? null);
+    setEncodingReviewRequired(options.encodingReviewRequired ?? false);
+    clearResult();
+  }, [clearResult, invalidatePreprocessing]);
 
   const setFile = useCallback((newFile: File | null) => {
     cancelPendingWork();
+    clearSourceState();
     setFileState(newFile);
     setError(null);
     setStatus('idle');
-  }, [cancelPendingWork]);
+  }, [cancelPendingWork, clearSourceState]);
 
   const setDocType = useCallback((nextDocType: DocType) => {
-    processOperationRef.current += 1;
-    processAbortRef.current?.abort();
-    processAbortRef.current = null;
+    invalidatePreprocessing();
     setDocTypeState(nextDocType);
     clearResult();
     setError(null);
     setStatus('idle');
-  }, [clearResult]);
+  }, [clearResult, invalidatePreprocessing]);
 
   const setSeparator = useCallback((_nextSeparator: string) => {
     setSeparatorState(MISO_SEPARATOR);
@@ -365,23 +380,13 @@ export function useFileProcessor(): UseFileProcessorReturn {
 
   const reset = useCallback(() => {
     cancelPendingWork();
-    textFileRef.current = null;
-    sourceDocumentRef.current = null;
+    clearSourceState();
     setFileState(null);
-    setInputTextState('');
-    setProcessedText('');
-    setProcessedChunks([]);
-    setStats(null);
     setError(null);
     setStatus('idle');
     setDocTypeState('general');
     setSeparatorState(MISO_SEPARATOR);
-    setSourceDocument(null);
-    setResult(null);
-    setTextEncoding(null);
-    setEncodingReviewRequired(false);
-    setExtractionIssues([]);
-  }, [cancelPendingWork]);
+  }, [cancelPendingWork, clearSourceState]);
 
   const setInputText = useCallback((text: string) => {
     cancelPendingWork();
@@ -408,14 +413,11 @@ export function useFileProcessor(): UseFileProcessorReturn {
   }, [cancelPendingWork, clearResult, file]);
 
   const handleFileRead = useCallback(async (selectedFile: File) => {
-    fileOperationRef.current += 1;
+    cancelPendingWork();
     const operationId = fileOperationRef.current;
-    fileAbortRef.current?.abort();
-    const controller = new AbortController();
-    fileAbortRef.current = controller;
-    processOperationRef.current += 1;
-    processAbortRef.current?.abort();
-    processAbortRef.current = null;
+    clearSourceState();
+    setFileState(selectedFile);
+    setError(null);
 
     if (!isFileSizeAllowed(selectedFile.size)) {
       setError('File size exceeds the 50 MB limit.');
@@ -425,16 +427,14 @@ export function useFileProcessor(): UseFileProcessorReturn {
 
     const processingRoute = getFileProcessingRoute(selectedFile.name);
     if (processingRoute === 'unsupported') {
-      setFileState(selectedFile);
       setError('Unsupported file format. Convert it to a supported document or text format.');
       setStatus('error');
       return;
     }
 
-    setFileState(selectedFile);
+    const controller = new AbortController();
+    fileAbortRef.current = controller;
     setStatus(processingRoute === 'miso' ? 'uploading' : 'reading');
-    setError(null);
-    textFileRef.current = null;
     const fileExtension = getFileExtension(selectedFile.name);
 
     try {
@@ -461,9 +461,9 @@ export function useFileProcessor(): UseFileProcessorReturn {
         document = await extractWorkbookInWorker(buffer, selectedFile.name, controller.signal);
         setDocTypeState('excel');
       } else if (processingRoute === 'local-docx') {
-        document = await extractDocxPreferLocal(selectedFile);
+        document = await extractDocxPreferLocal(selectedFile, {}, controller.signal);
       } else {
-        document = await extractTextViaMiso(selectedFile);
+        document = await extractTextViaMiso(selectedFile, fetch, controller.signal);
       }
 
       if (operationId !== fileOperationRef.current || controller.signal.aborted) return;
@@ -480,7 +480,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     } finally {
       if (fileAbortRef.current === controller) fileAbortRef.current = null;
     }
-  }, [applyExtraction]);
+  }, [applyExtraction, cancelPendingWork, clearSourceState]);
 
   const redecodeText = useCallback(async (encoding: 'utf-8' | 'euc-kr') => {
     const retained = textFileRef.current;
@@ -490,6 +490,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
       return;
     }
 
+    cancelPendingWork();
     try {
       const decoded = decodeTextBuffer(retained.buffer, {
         choice: encoding,
@@ -512,7 +513,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
       setError(errorMessage(caught, 'Text decoding failed.'));
       setStatus('error');
     }
-  }, [applyExtraction]);
+  }, [applyExtraction, cancelPendingWork]);
 
   const processText = useCallback(async () => {
     const document = sourceDocumentRef.current;
@@ -521,9 +522,8 @@ export function useFileProcessor(): UseFileProcessorReturn {
       return;
     }
 
-    processOperationRef.current += 1;
+    invalidatePreprocessing();
     const operationId = processOperationRef.current;
-    processAbortRef.current?.abort();
     const controller = new AbortController();
     processAbortRef.current = controller;
     setStatus('processing');
@@ -559,9 +559,10 @@ export function useFileProcessor(): UseFileProcessorReturn {
     } finally {
       if (processAbortRef.current === controller) processAbortRef.current = null;
     }
-  }, [docType, extractionIssues, inputText]);
+  }, [docType, extractionIssues, inputText, invalidatePreprocessing]);
 
   const updateChunks = useCallback((newChunks: string[]) => {
+    invalidatePreprocessing();
     const originalLength = result?.stats.originalLength
       ?? documentSourceLength(sourceDocumentRef.current, inputText.length);
     const validated = revalidateEditedChunks(newChunks, originalLength);
@@ -575,7 +576,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     setStats(updatedResult.stats);
     setStatus('complete');
     setError(null);
-  }, [extractionIssues, inputText.length, result?.stats.originalLength]);
+  }, [extractionIssues, inputText.length, invalidatePreprocessing, result?.stats.originalLength]);
 
   return {
     file,
