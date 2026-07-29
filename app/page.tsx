@@ -357,18 +357,20 @@ export default function Home() {
       <div className="container max-w-7xl mx-auto">
         {/* 헤더 */}
         <div className="mb-8">
-          <div className="mb-6">
-            <h1 className="text-3xl font-bold tracking-tight">
-              문서전처리(MISO RAG 투입용 TXT 제작 도구)
-            </h1>
-            <p className="text-muted-foreground mt-1">
-              사내 문서를 MISO RAG에 바로 등록할 수 있는 TXT 파일로 정리합니다.
-            </p>
+          <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">
+                문서전처리(MISO RAG 투입용 TXT 제작 도구)
+              </h1>
+              <p className="text-muted-foreground mt-1">
+                사내 문서를 MISO RAG에 바로 등록할 수 있는 TXT 파일로 정리합니다.
+              </p>
+            </div>
 
             <div
               role="tablist"
               aria-label="화면 선택"
-              className="mt-5 inline-flex rounded-lg border bg-muted/40 p-1"
+              className="inline-flex shrink-0 self-start rounded-lg border bg-muted/40 p-1"
             >
               <Button
                 type="button"

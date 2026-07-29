@@ -1,5 +1,7 @@
 import {
   AlertTriangle,
+  ArrowRight,
+  BrainCircuit,
   CheckCircle2,
   Database,
   Download,
@@ -118,9 +120,66 @@ function ExtensionList({ extensions }: { extensions: readonly string[] }) {
 export function UsageGuide() {
   return (
     <section className="space-y-6" aria-labelledby="usage-guide-title">
+      <Card className="border-primary/40 bg-primary/[0.03]">
+        <CardHeader>
+          <div className="mb-1 flex items-center gap-2 text-primary">
+            <BrainCircuit className="h-5 w-5" />
+            <span className="text-sm font-semibold">먼저 알아두세요</span>
+          </div>
+          <CardTitle id="usage-guide-title">왜 문서 전처리가 필요한가요?</CardTitle>
+          <CardDescription className="max-w-4xl text-sm leading-6">
+            MISO RAG에 문서를 등록했다고 해서 AI가 문서 전체를 매번 처음부터 끝까지 읽는 것은 아닙니다.
+            문서는 작은 청크로 나뉘고, 질문과 관련 있다고 검색된 일부 청크만 AI에게 전달됩니다.
+            따라서 청크의 경계와 제목 문맥이 답변 품질을 좌우합니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="flex flex-col gap-2 rounded-lg border bg-background p-4 text-sm font-medium sm:flex-row sm:items-center sm:justify-center">
+            {['원본 문서', '청크 분할', '관련 청크 검색', 'AI 답변'].map((label, index, items) => (
+              <div key={label} className="contents">
+                <span className="rounded-md bg-muted px-3 py-2 text-center">{label}</span>
+                {index < items.length - 1 && (
+                  <ArrowRight className="mx-auto h-4 w-4 shrink-0 rotate-90 text-muted-foreground sm:rotate-0" />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg border bg-background p-4">
+              <p className="font-semibold">청크가 너무 크면</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                서로 다른 주제가 한 덩어리에 섞여 정확한 내용을 찾기 어려워집니다.
+              </p>
+            </div>
+            <div className="rounded-lg border bg-background p-4">
+              <p className="font-semibold">청크가 너무 작거나 제목이 없으면</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                조항·업무·표의 소속 문맥이 사라져 AI가 내용의 의미를 잘못 이해할 수 있습니다.
+              </p>
+            </div>
+            <div className="rounded-lg border bg-background p-4">
+              <p className="font-semibold">추출 오류와 반복 문구가 남으면</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                실제 답변에 필요한 내용 대신 머릿글·깨진 표·잘못 인식된 문장이 검색될 수 있습니다.
+              </p>
+            </div>
+          </div>
+
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>문서 등록 성공이 곧 지식 활용 성공은 아닙니다.</AlertTitle>
+            <AlertDescription className="leading-6">
+              텍스트 확인과 결과 검토 단계에서 누락, 제목, 표, 청크 경계를 반드시 확인하세요.
+              전처리는 AI가 필요한 내용을 정확히 찾아 이해할 수 있게 만드는 작업입니다.
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
-          <CardTitle id="usage-guide-title">이 도구가 하는 일</CardTitle>
+          <CardTitle>이 도구가 하는 일</CardTitle>
           <CardDescription>
             여러 형태의 사내 문서를 MISO RAG에 등록하기 쉬운 청크 구분 TXT로 만듭니다.
           </CardDescription>
@@ -259,6 +318,10 @@ export function UsageGuide() {
         <AlertDescription>
           <ul className="mt-2 list-disc space-y-1 pl-5 leading-6">
             <li>파일당 최대 용량은 {maxFileSizeMb}MB입니다. 큰 엑셀은 브라우저 메모리에 따라 처리가 느리거나 실패할 수 있습니다.</li>
+            <li>
+              엑셀은 탭(시트)이 많거나 서로 다른 업무·기간·부서의 내용이 섞여 있으면 주제별 파일로 나눠 처리하는 것을 권장합니다.
+              고정된 탭 개수 제한은 없지만, 관련된 시트는 함께 두고 관계없는 시트 묶음만 나누세요.
+            </li>
             <li>HWP는 직접 지원하지 않습니다. DOCX 또는 PDF로 변환한 뒤 업로드하세요.</li>
             <li>암호가 걸렸거나 손상된 파일, 복잡한 표, 스캔 품질이 낮은 이미지에서는 누락이나 OCR 오인식이 생길 수 있습니다.</li>
             <li>4,000자는 토큰 수가 아니라 문자 수 기준입니다. MISO RAG의 실제 제한과 검색 품질은 등록 후 별도로 확인하세요.</li>
