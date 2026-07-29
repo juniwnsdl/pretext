@@ -41,12 +41,18 @@ import type { DocType } from '@/lib/text-preprocessor';
 
 import { ChunkViewerModal } from '@/components/chunk-viewer-modal';
 import { ChunkFlowViewer } from '@/components/chunk-flow-viewer';
+import { PreprocessResultSummary } from '@/components/preprocess-result-summary';
 import { Switch } from '@/components/ui/switch';
 import { ProgressStepper } from '@/components/progress-stepper';
 import { UsageGuide } from '@/components/usage-guide';
 
 import { useFileProcessor } from '@/hooks/useFileProcessor';
 import { FILE_INPUT_ACCEPT } from '@/lib/file-processing-policy';
+import {
+  APP_CHUNK_LIMIT,
+  MISO_CHUNK_LIMIT,
+  MISO_SEPARATOR,
+} from '@/lib/preprocessing/contracts';
 
 // ReactMarkdown 플러그인: 모든 요소에 data-source-pos 속성을 주입하여 원본 위치 추적
 const addSourcePosPlugin = () => {
@@ -98,20 +104,21 @@ export default function Home() {
     processedText,
     processedChunks,
     docType,
-    separator,
     stats,
     error,
     status,
+    result,
+    textEncoding,
+    encodingReviewRequired,
     // Actions
     setFile,
     setInputText,
     setDocType,
-    setSeparator,
-    setProcessedText,
     updateChunks,
     reset,
     handleFileRead,
     processText,
+    redecodeText,
   } = useFileProcessor();
 
   const [inputKey, setInputKey] = useState(Date.now());
@@ -185,7 +192,7 @@ export default function Home() {
       });
     }
 
-    if (prevStatus === 'processing' && status === 'complete') {
+    if (prevStatus === 'processing' && status === 'complete' && result !== null) {
       setActiveTab('output');
       setIsVisualizationReady(true);
       setShowChunkFlow(true); // 시각화 자동 활성화
@@ -194,15 +201,15 @@ export default function Home() {
         description: `${stats?.chunkCount}개의 청크가 생성되었습니다.`,
       });
     }
-  }, [status, inputText, stats]);
+  }, [status, inputText, result, stats]);
 
   // 결과 검토 탭 진입 시 시각화 자동 활성화
   useEffect(() => {
-    if (activeTab === 'output' && processedText && !isEditMode) {
+    if (activeTab === 'output' && result !== null && !isEditMode) {
       setShowChunkFlow(true);
       setIsVisualizationReady(true);
     }
-  }, [activeTab, processedText, isEditMode]);
+  }, [activeTab, result, isEditMode]);
 
   // 편집 모드로 전환될 때 텍스트 위치 찾아가기
   const jumpToTextPosition = (targetText: string, offset?: number) => {
@@ -285,18 +292,18 @@ export default function Home() {
     });
   };
 
-  const handleDownload = () => {
-    if (!processedText) return;
+  const downloadText = (text: string, prefix: string) => {
+    if (!text) return;
 
-    const blob = new Blob([processedText], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     
-    let fileName = `preprocessed_data_${new Date().getTime()}.txt`;
+    let fileName = `${prefix}_${new Date().getTime()}.txt`;
     if (file) {
       const originalName = file.name.replace(/\.[^/.]+$/, "");
-      fileName = `[전처리] ${originalName}.txt`;
+      fileName = `[${prefix}] ${originalName}.txt`;
     }
 
     link.download = fileName;
@@ -325,7 +332,7 @@ export default function Home() {
       id: 'input',
       label: '텍스트 확인',
       status: inputText 
-        ? processedText 
+        ? result !== null
           ? 'completed' as const 
           : activeTab === 'input' 
           ? 'current' as const 
@@ -335,7 +342,7 @@ export default function Home() {
     {
       id: 'process',
       label: '전처리',
-      status: processedText 
+      status: result !== null
         ? 'completed' as const 
         : inputText && activeTab === 'process' 
         ? 'current' as const 
@@ -344,7 +351,7 @@ export default function Home() {
     {
       id: 'output',
       label: '결과 검토',
-      status: processedText 
+      status: result !== null
         ? activeTab === 'output' 
           ? 'current' as const 
           : 'completed' as const
@@ -426,7 +433,7 @@ export default function Home() {
             <TabsTrigger value="process" disabled={!inputText} className="py-2.5">
               3. 전처리
             </TabsTrigger>
-            <TabsTrigger value="output" disabled={!processedText} className="py-2.5">
+            <TabsTrigger value="output" disabled={result === null} className="py-2.5">
               4. 결과 검토
             </TabsTrigger>
           </TabsList>
@@ -530,6 +537,24 @@ export default function Home() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                {encodingReviewRequired && (
+                  <Alert className="border-amber-300 bg-amber-50/70 dark:bg-amber-950/20">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <span>한글이 깨져 보이면 문자 인코딩을 바꿔 원문을 다시 확인하세요.</span>
+                      <select
+                        aria-label="문자 인코딩"
+                        value={textEncoding ?? 'utf-8'}
+                        onChange={(event) => void redecodeText(event.target.value as 'utf-8' | 'euc-kr')}
+                        className="h-9 rounded-md border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value="utf-8">UTF-8</option>
+                        <option value="euc-kr">EUC-KR</option>
+                      </select>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
                 {showPreview && inputText ? (
                   <div 
                     ref={previewRef}
@@ -635,14 +660,24 @@ export default function Home() {
                   />
                 )}
 
-                <div className="flex items-center justify-between pt-2 text-sm text-muted-foreground">
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-sm text-muted-foreground">
                   <span>입력 길이: {inputText.length.toLocaleString()}자</span>
-                  <Button 
-                    onClick={() => setActiveTab('process')}
-                    disabled={!inputText.trim()}
-                  >
-                    다음 단계: 전처리
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => downloadText(inputText, '추출 원문')}
+                      disabled={!inputText}
+                    >
+                      추출 원문 TXT 다운로드
+                    </Button>
+                    <Button
+                      onClick={() => setActiveTab('process')}
+                      disabled={!inputText.trim()}
+                    >
+                      다음 단계: 전처리
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -656,7 +691,7 @@ export default function Home() {
                   <div>
                     <CardTitle>전처리 설정</CardTitle>
                     <CardDescription className="mt-1.5">
-                      문서 종류와 청크 구분자를 설정하고 전처리를 시작하세요
+                      문서 종류를 선택하면 MISO 기준에 맞춰 자동으로 나눕니다
                     </CardDescription>
                   </div>
                   <Button
@@ -716,20 +751,10 @@ export default function Home() {
                   </RadioGroup>
                 </div>
 
-                <div className="space-y-3">
-                  <Label htmlFor="separator" className="text-base font-medium">
-                    청크 구분자
-                  </Label>
-                  <Input
-                    id="separator"
-                    value={separator}
-                    onChange={(e) => setSeparator(e.target.value)}
-                    placeholder="예: @@@"
-                    className="font-mono"
-                  />
-                  <p className="text-sm text-muted-foreground">
-                    RAG 시스템에서 청크를 구분하는 문자열입니다. 기본값: @@@
-                  </p>
+                <div className="grid gap-2 rounded-lg border bg-muted/30 p-4 text-sm sm:grid-cols-3">
+                  <p><span className="text-muted-foreground">MISO 구분자:</span> <strong className="font-mono">{MISO_SEPARATOR}</strong></p>
+                  <p><span className="text-muted-foreground">MISO 최대 길이:</span> <strong>{MISO_CHUNK_LIMIT.toLocaleString()}자</strong></p>
+                  <p><span className="text-muted-foreground">앱 안전 상한:</span> <strong>{APP_CHUNK_LIMIT.toLocaleString()}자</strong></p>
                 </div>
 
                 <Button 
@@ -790,7 +815,7 @@ export default function Home() {
                           variant="secondary"
                           onClick={() => {
                             setIsEditMode(true);
-                            setEditingText(processedText);
+                            setEditingText(processedChunks.join(MISO_SEPARATOR));
                             setShowChunkFlow(false);
                           }}
                           disabled={!processedText}
@@ -808,12 +833,8 @@ export default function Home() {
                     ) : (
                       <Button
                         onClick={() => {
-                          // 텍스트 편집 후 저장 시 청크 데이터도 함께 업데이트
-                          // 구분자를 기준으로 나누되, 구분자 주변의 공백(줄바꿈 포함)을 제거하여 깔끔한 청크 생성
-                          const escapedSeparator = separator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                          const newChunks = editingText.split(new RegExp(`\\s*${escapedSeparator}\\s*`));
-                          
-                          updateChunks(newChunks); // 이 함수가 processedText도 함께 업데이트함 (join으로)
+                          const newChunks = editingText.split(MISO_SEPARATOR);
+                          updateChunks(newChunks);
                           
                           setIsEditMode(false);
                           setShowChunkFlow(true);
@@ -830,6 +851,8 @@ export default function Home() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                {result && <PreprocessResultSummary result={result} />}
+
                 {!isEditMode && showChunkFlow && isVisualizationReady ? (
                   <div className="h-[600px] rounded-lg border overflow-hidden">
                     <ChunkFlowViewer chunks={processedChunks} onChunkUpdate={updateChunks} />
@@ -859,21 +882,34 @@ export default function Home() {
                     <Badge variant="secondary" className="text-sm px-3 py-1">
                       청크: {stats.chunkCount}개
                     </Badge>
-                    <Badge variant="secondary" className="text-sm px-3 py-1">
-                      평균: {Math.round(stats.processedLength / stats.chunkCount).toLocaleString()}자/청크
-                    </Badge>
+                    {stats.chunkCount > 0 && (
+                      <Badge variant="secondary" className="text-sm px-3 py-1">
+                        평균: {Math.round(stats.processedLength / stats.chunkCount).toLocaleString()}자/청크
+                      </Badge>
+                    )}
                   </div>
                 )}
 
                 {!isEditMode && (
-                  <Button 
-                    onClick={handleDownload} 
-                    disabled={!processedText}
-                    className="w-full h-12 text-base font-semibold"
-                    size="lg"
-                  >
-                    TXT 파일 다운로드
-                  </Button>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Button
+                      onClick={() => downloadText(inputText, '추출 원문')}
+                      disabled={!inputText}
+                      variant="outline"
+                      className="h-12 text-base font-semibold"
+                      size="lg"
+                    >
+                      추출 원문 TXT 다운로드
+                    </Button>
+                    <Button
+                      onClick={() => downloadText(processedText, 'MISO 등록용')}
+                      disabled={!result?.canDownload || !processedText}
+                      className="h-12 text-base font-semibold"
+                      size="lg"
+                    >
+                      MISO 등록용 TXT 다운로드
+                    </Button>
+                  </div>
                 )}
               </CardContent>
             </Card>

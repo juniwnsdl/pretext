@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { GripHorizontal } from 'lucide-react';
+import { APP_CHUNK_LIMIT } from '@/lib/preprocessing/contracts';
 
 interface ChunkFlowViewerProps {
   chunks: string[];
@@ -283,9 +284,15 @@ export function ChunkFlowViewer({ chunks, onChunkUpdate }: ChunkFlowViewerProps)
               }`}
             >
               {/* 청크 번호 항상 표시 (왼쪽 상단) */}
-              <div className="absolute top-2 left-2 z-10 pointer-events-none">
+              <div className="absolute top-2 left-2 z-10 flex items-center gap-2 pointer-events-none">
                 <Badge variant="secondary" className="text-xs font-semibold px-2 py-0.5 bg-background/80 backdrop-blur-sm shadow-sm">
                   Chunk #{index + 1}
+                </Badge>
+                <Badge
+                  variant={chunk.length > APP_CHUNK_LIMIT ? 'destructive' : 'outline'}
+                  className="text-xs font-semibold px-2 py-0.5 backdrop-blur-sm shadow-sm"
+                >
+                  {chunk.length.toLocaleString()}자
                 </Badge>
               </div>
               

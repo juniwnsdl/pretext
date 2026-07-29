@@ -18,6 +18,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
+import { APP_CHUNK_LIMIT } from '@/lib/preprocessing/contracts';
 
 interface ChunkViewerModalProps {
   isOpen: boolean;
@@ -137,7 +138,10 @@ export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalPr
             
             <div className="h-6 w-px bg-border" />
             
-            <Badge variant="outline" className="text-sm">
+            <Badge
+              variant={(selectedChunk?.length ?? 0) > APP_CHUNK_LIMIT ? 'destructive' : 'outline'}
+              className="text-sm"
+            >
               {formatCharCount(selectedChunk?.length || 0)}
             </Badge>
           </div>
@@ -170,7 +174,10 @@ export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalPr
                           }`}>
                             #{(originalIndex + 1).toString().padStart(3, '0')}
                           </span>
-                          <Badge variant="secondary" className="text-xs">
+                          <Badge
+                            variant={chunk.length > APP_CHUNK_LIMIT ? 'destructive' : 'secondary'}
+                            className="text-xs"
+                          >
                             {formatCharCount(chunk.length)}
                           </Badge>
                         </div>
