@@ -391,7 +391,7 @@ export default function Home() {
                 size="sm"
                 onClick={() => setHeaderTab('guide')}
               >
-                사용법
+                도움말
               </Button>
             </div>
           </div>
