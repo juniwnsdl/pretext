@@ -341,60 +341,6 @@ function chunkStructuredText(
   return chunks;
 }
 
-/**
- * 구조 시작 줄을 청크 경계로만 사용한다. 줄 전체를 반복 제목으로 취급하지 않는다.
- */
-function chunkTextAtStructureBoundaries(
-  text: string,
-  isBoundary: (line: string) => boolean,
-  maxChunkSize: number = 4000,
-  splitText: TextSplitter = chunkText
-): string[] {
-  const blocks: string[] = [];
-  let blockLines: string[] = [];
-
-  const flushBlock = () => {
-    const block = blockLines.join('\n').trim();
-    if (block) blocks.push(block);
-    blockLines = [];
-  };
-
-  for (const line of text.split('\n')) {
-    if (isBoundary(line) && blockLines.some((blockLine) => blockLine.trim())) {
-      flushBlock();
-    }
-    blockLines.push(line);
-  }
-  flushBlock();
-
-  const chunks: string[] = [];
-  let mergeBuffer = '';
-
-  const flushMergeBuffer = () => {
-    if (mergeBuffer) chunks.push(mergeBuffer);
-    mergeBuffer = '';
-  };
-
-  for (const block of blocks) {
-    if (block.length > maxChunkSize) {
-      flushMergeBuffer();
-      chunks.push(...splitText(block, maxChunkSize));
-      continue;
-    }
-
-    const nextValue = mergeBuffer ? `${mergeBuffer}\n\n${block}` : block;
-    if (nextValue.length <= maxChunkSize) {
-      mergeBuffer = nextValue;
-    } else {
-      flushMergeBuffer();
-      mergeBuffer = block;
-    }
-  }
-
-  flushMergeBuffer();
-  return chunks;
-}
-
 function isManualHeading(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length > 100) return false;
@@ -427,15 +373,172 @@ function chunkManual(text: string, maxChunkSize: number = 4000): string[] {
   );
 }
 
-/**
- * 법령, 계약조건, 사규 등에서 새 구조 단위가 시작되는 줄을 감지한다.
- * DOCX 목록 번호가 앞에 붙은 "1.1.70. 제1조(목적)" 형태도 허용한다.
- */
-function isLegalStructureStart(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed) return false;
+type LegalStructureLine = {
+  kind:
+    | 'part'
+    | 'chapter'
+    | 'section'
+    | 'subsection'
+    | 'article'
+    | 'addendum'
+    | 'appendix'
+    | 'form';
+  heading: string;
+  inlineBody: string;
+  leadingMetadata: string;
+};
 
-  return /^(?:(?:\d+\.)+\s*)?(?:제\s*\d+\s*(?:(?:편|장|절|관)(?=\s|$|\()|조(?:\s*의\s*\d+)?(?=\s|$|\())|부칙(?=\s|$|\()|별표(?:\s|$|\d)|별지(?:\s|$|\d))/.test(trimmed);
+type LegalStructuredBlock = {
+  heading: string | null;
+  body: string;
+  leadingMetadata: string;
+};
+
+/**
+ * MISO가 한 줄로 전달한 조문 제목과 본문을 분리한다.
+ * 줄 길이로 제목 여부를 판단하지 않는다.
+ */
+function parseLegalStructureLine(line: string): LegalStructureLine | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const metadataMatch = trimmed.match(
+    /^((?:(?:\d+\.)+\s*)?(?:\[(?:\d+\.)+\]\s*)?)(?=제\s*\d+)/,
+  );
+  const leadingMetadata = metadataMatch?.[1].trim() ?? '';
+  const value = leadingMetadata
+    ? trimmed.slice(metadataMatch?.[1].length ?? 0).trim()
+    : trimmed;
+
+  const articleMatch = value.match(
+    /^(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s*(\([^\n)]*\)))?(?:\s*(.*))?$/,
+  );
+  if (articleMatch) {
+    const titleIndex = articleMatch[2]
+      ? value.indexOf(articleMatch[2], articleMatch[1].length)
+      : -1;
+    const articleHeading = articleMatch[2]
+      ? value.slice(0, titleIndex + articleMatch[2].length).trim()
+      : articleMatch[1].trim();
+
+    return {
+      kind: 'article',
+      heading: articleHeading,
+      inlineBody: articleMatch[3]?.trim() ?? '',
+      leadingMetadata,
+    };
+  }
+
+  const hierarchyMatch = value.match(/^(제\s*\d+\s*(편|장|절|관))(?:\s+.*)?$/);
+  if (hierarchyMatch) {
+    const kindByUnit: Record<string, LegalStructureLine['kind']> = {
+      편: 'part',
+      장: 'chapter',
+      절: 'section',
+      관: 'subsection',
+    };
+    return {
+      kind: kindByUnit[hierarchyMatch[2]],
+      heading: value,
+      inlineBody: '',
+      leadingMetadata,
+    };
+  }
+
+  if (/^부칙(?=\s|$|\()/.test(value)) {
+    return { kind: 'addendum', heading: value, inlineBody: '', leadingMetadata };
+  }
+  if (/^별표(?:\s|$|\d)/.test(value)) {
+    return { kind: 'appendix', heading: value, inlineBody: '', leadingMetadata };
+  }
+  if (/^별지(?:\s|$|\d)/.test(value)) {
+    return { kind: 'form', heading: value, inlineBody: '', leadingMetadata };
+  }
+
+  return null;
+}
+
+function renderLegalBlock(block: LegalStructuredBlock): string {
+  const heading = block.heading
+    ? [block.leadingMetadata, block.heading].filter(Boolean).join(' ')
+    : '';
+  return [heading, block.body].filter(Boolean).join('\n').trim();
+}
+
+function chunkLegalStructuredText(
+  text: string,
+  maxChunkSize: number = 4000,
+  splitText: TextSplitter = chunkText,
+): string[] {
+  const blocks: LegalStructuredBlock[] = [];
+  let heading: string | null = null;
+  let leadingMetadata = '';
+  let bodyLines: string[] = [];
+
+  const flushBlock = () => {
+    const body = bodyLines.join('\n').trim();
+    if (heading || body) blocks.push({ heading, body, leadingMetadata });
+    heading = null;
+    leadingMetadata = '';
+    bodyLines = [];
+  };
+
+  for (const line of text.split('\n')) {
+    const structure = parseLegalStructureLine(line);
+    if (!structure) {
+      bodyLines.push(line);
+      continue;
+    }
+
+    flushBlock();
+    heading = structure.heading;
+    leadingMetadata = structure.leadingMetadata;
+    if (structure.inlineBody) bodyLines.push(structure.inlineBody);
+  }
+  flushBlock();
+
+  const chunks: string[] = [];
+  let mergeBuffer = '';
+
+  const flushMergeBuffer = () => {
+    if (mergeBuffer) chunks.push(mergeBuffer);
+    mergeBuffer = '';
+  };
+
+  for (const block of blocks) {
+    const rendered = renderLegalBlock(block);
+    if (rendered.length <= maxChunkSize) {
+      const nextValue = mergeBuffer ? `${mergeBuffer}\n\n${rendered}` : rendered;
+      if (nextValue.length <= maxChunkSize) {
+        mergeBuffer = nextValue;
+      } else {
+        flushMergeBuffer();
+        mergeBuffer = rendered;
+      }
+      continue;
+    }
+
+    flushMergeBuffer();
+    if (!block.heading) {
+      chunks.push(...splitText(block.body, maxChunkSize));
+      continue;
+    }
+
+    const firstHeading = [block.leadingMetadata, block.heading]
+      .filter(Boolean)
+      .join(' ');
+    const prefixLength = Math.max(firstHeading.length, block.heading.length) + 1;
+    const bodyChunkSize = Math.max(100, maxChunkSize - prefixLength);
+    const bodyChunks = splitText(block.body, bodyChunkSize);
+
+    bodyChunks.forEach((bodyChunk, index) => {
+      const chunkHeading = index === 0 ? firstHeading : block.heading!;
+      chunks.push(`${chunkHeading}\n${bodyChunk}`.trim());
+    });
+  }
+
+  flushMergeBuffer();
+  return chunks;
 }
 
 /**
@@ -443,13 +546,12 @@ function isLegalStructureStart(line: string): boolean {
  * 구조가 없는 보고서나 일반 텍스트는 기존 문단/표 기반 청킹을 유지한다.
  */
 function chunkGeneral(text: string, maxChunkSize: number = 4000): string[] {
-  if (!text.split('\n').some(isLegalStructureStart)) {
+  if (!text.split('\n').some((line) => parseLegalStructureLine(line))) {
     return chunkMarkdownWithTables(text, maxChunkSize, 0);
   }
 
-  return chunkTextAtStructureBoundaries(
+  return chunkLegalStructuredText(
     text,
-    isLegalStructureStart,
     maxChunkSize,
     (content, size) => chunkMarkdownWithTables(content, size, 0)
   );
@@ -461,17 +563,12 @@ function chunkGeneral(text: string, maxChunkSize: number = 4000): string[] {
  * - 구조가 없으면 일반 청킹으로 fallback
  */
 function chunkLawStructure(text: string, maxChunkSize: number = 4000): string[] {
-  if (!text.split('\n').some(isLegalStructureStart)) {
+  if (!text.split('\n').some((line) => parseLegalStructureLine(line))) {
     // 법령 구조가 아니면 일반 청킹 사용
     return chunkText(text, maxChunkSize);
   }
 
-  return chunkTextAtStructureBoundaries(
-    text,
-    isLegalStructureStart,
-    maxChunkSize,
-    chunkText
-  );
+  return chunkLegalStructuredText(text, maxChunkSize, chunkText);
 }
 
 const DELEGATION_MANUAL_TITLE = '[위임전결규정 매뉴얼]';
