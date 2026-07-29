@@ -58,34 +58,26 @@ function removeRepeatedPageDecorations(text: string): PreparedSourceText {
     positionsByValue.set(value, positions);
   });
 
-  const removable = new Set<string>();
+  const removableLineIndexes = new Set<number>();
   for (const [value, positions] of positionsByValue) {
     if (!isDecorationCandidate(value)) continue;
-    const closeToPageNumber = positions.filter((position) =>
+    const evidencedPositions = positions.filter((position) =>
       pagePositions.some((pagePosition) => Math.abs(pagePosition - position) <= 3),
     );
-    if (closeToPageNumber.length >= 2) removable.add(value);
+    if (evidencedPositions.length < 2) continue;
+    for (const position of evidencedPositions.slice(1)) {
+      removableLineIndexes.add(nonEmpty[position].lineIndex);
+    }
   }
 
-  if (removable.size === 0) return { text, warnings: [] };
+  if (removableLineIndexes.size === 0) return { text, warnings: [] };
 
-  const kept = new Set<string>();
-  let removedCount = 0;
-  const filtered = lines.filter((line) => {
-    const value = line.trim().replace(/\s+/gu, ' ');
-    if (!removable.has(value)) return true;
-    if (!kept.has(value)) {
-      kept.add(value);
-      return true;
-    }
-    removedCount += 1;
-    return false;
-  });
+  const filtered = lines.filter((_, lineIndex) => !removableLineIndexes.has(lineIndex));
 
   return {
     text: filtered.join('\n'),
-    warnings: removedCount > 0
-      ? [issue('page-decoration-removed', 'warning', 'Repeated page decorations were removed.', removedCount)]
+    warnings: removableLineIndexes.size > 0
+      ? [issue('page-decoration-removed', 'warning', 'Repeated page decorations were removed.', removableLineIndexes.size)]
       : [],
   };
 }
@@ -167,12 +159,18 @@ function validateSourceBlockIds(
   drafts: ChunkDraft[],
   issues: PreprocessIssue[],
 ): void {
-  const expected = new Set(expectedSourceBlockIds);
-  const consumed = new Set(drafts.flatMap((draft) => draft.sourceBlockIds));
-  const mismatches = [
-    ...[...expected].filter((id) => !consumed.has(id)),
-    ...[...consumed].filter((id) => !expected.has(id)),
-  ];
+  const countIds = (ids: string[]): Map<string, number> => ids.reduce((counts, id) => {
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const expected = countIds(expectedSourceBlockIds);
+  const consumed = countIds(drafts.flatMap((draft) => draft.sourceBlockIds));
+  const ids = new Set([...expected.keys(), ...consumed.keys()]);
+  const mismatches = [...ids].filter((id) => {
+    const expectedCount = expected.get(id) ?? 0;
+    const consumedCount = consumed.get(id) ?? 0;
+    return expectedCount !== consumedCount || expectedCount > 1 || consumedCount > 1;
+  });
   if (mismatches.length > 0) {
     issues.push(issue('source-block-consumption-mismatch', 'error', 'Chunk drafts do not consume the expected source blocks.', mismatches.length));
   }
