@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "fileName": "병합셀-장문.xlsx",
+  "sourceFormat": "xlsx",
+  "extractionMethod": "local-excel",
+  "blocks": [
+    {
+      "id": "sheet-long-cell",
+      "kind": "table",
+      "order": 0,
+      "headingPath": [],
+      "sheetName": "장문점검",
+      "tableId": "long-cell-table",
+      "rows": [
+        ["행 ID", "설명", "비고"],
+        ["PIPE-001", "배관|밸브", "\"인용 값\""] ,
+        ["LINE-001", "첫째 줄\n둘째 줄", "줄바꿈 보존"],
+        ["LONG-4100", "__LONG_CELL_4100__", "장문 안전 분할"],
+        ["", "", ""],
+        ["행 ID", "설명", "비고"],
+        ["SECOND-001", "두 번째 표", "빈 행 경계"]
+      ],
+      "merges": [
+        {
+          "range": "A1:B1",
+          "start": { "row": 0, "column": 0 },
+          "end": { "row": 0, "column": 1 }
+        }
+      ]
+    }
+  ],
+  "warnings": []
+}

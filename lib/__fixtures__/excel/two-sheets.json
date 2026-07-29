@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "fileName": "발전소-현장현황.xlsx",
+  "sourceFormat": "xlsx",
+  "extractionMethod": "local-excel",
+  "blocks": [
+    {
+      "id": "sheet-operation",
+      "kind": "table",
+      "order": 0,
+      "headingPath": [],
+      "sheetName": "운전현황",
+      "tableId": "operation-table",
+      "rows": [
+        ["설비 ID", "상태"],
+        ["RUN-001", "정상"],
+        ["RUN-002", "점검"],
+        ["", ""],
+        ["계측 ID", "압력"],
+        ["PRESS-001", "12.4 MPa"]
+      ]
+    },
+    {
+      "id": "sheet-maintenance",
+      "kind": "table",
+      "order": 1,
+      "headingPath": [],
+      "sheetName": "정비계획",
+      "tableId": "maintenance-table",
+      "rows": [
+        ["작업 ID", "담당"],
+        ["MAINT-001", "기계팀"],
+        ["MAINT-002", "전기팀"]
+      ]
+    }
+  ],
+  "warnings": []
+}
