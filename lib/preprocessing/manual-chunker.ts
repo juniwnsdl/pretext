@@ -177,10 +177,16 @@ function appendRawLine(section: ManualSection, line: string, sourceId: string): 
   const kind = classifyManualLine(line);
   if (kind === 'safety') {
     const previous = section.units.at(-1);
-    if (previous?.kind === 'text' && previous.role === 'step' && section.pendingSafety.length === 0) {
+    if (
+      previous?.kind === 'text' &&
+      (previous.role === 'step' || previous.role === 'instruction') &&
+      section.pendingSafety.length === 0
+    ) {
       previous.text += `\n${line}`;
       previous.sourceIds = unique([...previous.sourceIds, sourceId]);
-      previous.safetySuffix = `${previous.safetySuffix ?? ''}\n${line}`;
+      if (previous.role === 'step') {
+        previous.safetySuffix = `${previous.safetySuffix ?? ''}\n${line}`;
+      }
       return;
     }
     section.pendingSafety.push({ text: line, sourceId });
@@ -383,7 +389,6 @@ function renderSection(
         message: 'A non-step manual unit exceeds the chunk limit and cannot be split at a step boundary.',
         locations: unit.sourceIds,
       });
-      continue;
     }
     const fragments = unit.role === 'step'
       ? splitOversizedStep(unit, limit)
