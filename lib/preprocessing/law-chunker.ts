@@ -100,11 +100,11 @@ function hasExplicitMarkdownHeadingSyntax(line: string): boolean {
 function isImmediateLegalCitationSuffix(value: string): boolean {
   if (!value || /^\s/u.test(value)) return false;
   return [
-    /^에\s*(?:따른|따라|의한|의하여|의하면|관한|관하여|근거한|의거한|규정된|명시된|해당하는)/u,
-    /^에서\s*(?:정한|정하는|규정한|규정하는|규정된|명시한|명시하는)/u,
+    /^에\s*(?:따(?:르|른|라)|의(?:하|한|해)|관(?:하|한|해)|근거|의거|규정|명시|해당)/u,
+    /^에서\s*(?:정(?:하|한|해)|규정(?:하|한|해|되|된)|명시(?:하|한|해|되|된))/u,
     /^의\s*(?:규정|내용|적용|취지)/u,
     /^[을를]\s*(?:적용|준용|인용|참조)/u,
-    /^[과와]\s*(?:관련된|관련한|관계된|관계한)/u,
+    /^[과와]\s*(?:관련|관계)/u,
   ].some((pattern) => pattern.test(value));
 }
 
