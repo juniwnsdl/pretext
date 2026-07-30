@@ -52,6 +52,7 @@ const EXTRACTION_METHODS = new Set<ExtractedDocument['extractionMethod']>([
   'local-excel',
   'local-docx',
   'miso',
+  'law-api',
   'user-edited',
 ]);
 

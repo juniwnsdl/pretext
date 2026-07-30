@@ -47,6 +47,7 @@ import { ExcelSettingsDialog } from '@/components/excel-settings-dialog';
 import { Switch } from '@/components/ui/switch';
 import { ProgressStepper } from '@/components/progress-stepper';
 import { UsageGuide } from '@/components/usage-guide';
+import { LawSearchPanel } from '@/components/law-search-panel';
 
 import { useFileProcessor } from '@/hooks/useFileProcessor';
 import {
@@ -125,6 +126,7 @@ export default function Home() {
     updateChunks,
     reset,
     handleFileRead,
+    handleLawRead,
     processText,
     reprocessExcel,
     redecodeText,
@@ -141,6 +143,7 @@ export default function Home() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [isExcelSettingsOpen, setIsExcelSettingsOpen] = useState(false);
   const [headerTab, setHeaderTab] = useState<'preprocess' | 'guide'>('preprocess');
+  const [sourceMode, setSourceMode] = useState<'file' | 'law'>('file');
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -204,7 +207,7 @@ export default function Home() {
       setActiveTab('input');
       // 미리보기는 기본적으로 비활성화 (사용자가 원할 때 활성화)
       setShowPreview(false);
-      toast.success('텍스트 추출 완료', {
+      toast.success(sourceDocument?.extractionMethod === 'law-api' ? '법령 원문 가져오기 완료' : '텍스트 추출 완료', {
         description: `${inputText.length.toLocaleString()}자가 추출되었습니다.`,
       });
     }
@@ -218,7 +221,7 @@ export default function Home() {
         description: `${stats?.chunkCount}개의 청크가 생성되었습니다.`,
       });
     }
-  }, [status, inputText, result, stats]);
+  }, [status, inputText, result, sourceDocument, stats]);
 
   // 결과 검토 탭 진입 시 시각화 자동 활성화
   useEffect(() => {
@@ -297,6 +300,7 @@ export default function Home() {
   const performReset = () => {
     reset();
     setInputKey(Date.now());
+    setSourceMode('file');
     setActiveTab('upload');
     setShowPreview(false);
     setShowChunkFlow(false);
@@ -318,8 +322,9 @@ export default function Home() {
     link.href = url;
     
     let fileName = `${prefix}_${new Date().getTime()}.txt`;
-    if (file) {
-      const originalName = file.name.replace(/\.[^/.]+$/, "");
+    const sourceFileName = file?.name ?? sourceDocument?.fileName;
+    if (sourceFileName) {
+      const originalName = sourceFileName.replace(/\.[^/.]+$/, "");
       fileName = `[${prefix}] ${originalName}.txt`;
     }
 
@@ -338,8 +343,8 @@ export default function Home() {
   const steps = [
     {
       id: 'upload',
-      label: '파일 업로드',
-      status: file 
+      label: '자료 가져오기',
+      status: inputText
         ? 'completed' as const
         : activeTab === 'upload' 
         ? 'current' as const 
@@ -387,7 +392,7 @@ export default function Home() {
                 문서 전처리
               </h1>
               <p className="text-muted-foreground mt-1">
-                사내 문서를 MISO RAG에 바로 등록할 수 있는 RAG 투입용 TXT 제작 도구입니다.
+                파일과 현행 법령을 MISO RAG에 바로 등록할 수 있는 RAG 투입용 TXT 제작 도구입니다.
                 전처리를 진행한 후 TXT 파일로 정리합니다.
               </p>
             </div>
@@ -442,7 +447,7 @@ export default function Home() {
         >
           <TabsList className="grid w-full grid-cols-4 h-auto p-1">
             <TabsTrigger value="upload" className="py-2.5">
-              1. 파일 업로드
+              1. 자료 가져오기
             </TabsTrigger>
             <TabsTrigger value="input" disabled={!inputText} className="py-2.5">
               2. 텍스트 확인
@@ -455,84 +460,101 @@ export default function Home() {
             </TabsTrigger>
           </TabsList>
 
-          {/* 탭 1: 파일 업로드 */}
+          {/* 탭 1: 자료 가져오기 */}
           <TabsContent value="upload" className="mt-6">
             <Card>
               <CardHeader>
-                <CardTitle>파일 선택</CardTitle>
+                <CardTitle>자료 가져오기</CardTitle>
                 <CardDescription>
-                  문서 또는 이미지 파일을 업로드하면 텍스트로 변환합니다
+                  파일을 업로드하거나 국가법령정보센터에서 법령을 가져옵니다
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-3">
-                  <Input
-                    key={inputKey}
-                    id="file"
-                    type="file"
-                    accept={FILE_INPUT_ACCEPT}
-                    onChange={(e) => {
-                      const selectedFile = e.target.files?.[0];
-                      if (selectedFile) {
-                        setFile(selectedFile);
-                      }
-                    }}
-                    className="cursor-pointer"
-                  />
-                  {file && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-4 py-3 rounded-md">
-                      <div className="flex-1 flex items-center gap-2">
-                        <p className="font-medium text-foreground">{file.name}</p>
-                        <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(2)} KB</p>
-                      </div>
-                    </div>
-                  )}
-                  {selectedFileDisclosure && (
-                    <Alert>
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertDescription className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium text-foreground">{selectedFileDisclosure.title}</span>
-                          <Badge variant={selectedFileDisclosure.transmission === 'never' ? 'outline' : 'default'}>
-                            {selectedFileDisclosure.transmissionLabel}
-                          </Badge>
-                        </div>
-                        <p className="leading-6">{selectedFileDisclosure.message}</p>
-                      </AlertDescription>
-                    </Alert>
-                  )}
-                </div>
-
-                <Button 
-                  onClick={() => file && handleFileRead(file)} 
-                  disabled={status === 'reading' || status === 'uploading' || !file}
-                  className="w-full h-12 text-base font-semibold"
-                  size="lg"
+              <CardContent>
+                <Tabs
+                  value={sourceMode}
+                  onValueChange={(value) => setSourceMode(value as 'file' | 'law')}
+                  className="w-full"
                 >
-                  {status === 'reading' || status === 'uploading' ? (
-                    <>
-                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      파일 처리 중...
-                    </>
-                  ) : (
-                    selectedFileDisclosure
-                      ? selectedFileDisclosure.buttonLabel
-                      : '파일 처리하기'
-                  )}
-                </Button>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="file">파일 업로드</TabsTrigger>
+                    <TabsTrigger value="law">법령 검색</TabsTrigger>
+                  </TabsList>
 
-                {(status === 'reading' || status === 'uploading') && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">
-                        {status === 'reading' ? '텍스트 추출 중' : 'API 처리 중'}
-                      </span>
+                  <TabsContent value="file" className="mt-5 space-y-6">
+                    <div className="space-y-3">
+                      <Input
+                        key={inputKey}
+                        id="file"
+                        type="file"
+                        accept={FILE_INPUT_ACCEPT}
+                        onChange={(e) => {
+                          const selectedFile = e.target.files?.[0];
+                          if (selectedFile) {
+                            setFile(selectedFile);
+                          }
+                        }}
+                        className="cursor-pointer"
+                      />
+                      {file && (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 px-4 py-3 rounded-md">
+                          <div className="flex-1 flex items-center gap-2">
+                            <p className="font-medium text-foreground">{file.name}</p>
+                            <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(2)} KB</p>
+                          </div>
+                        </div>
+                      )}
+                      {selectedFileDisclosure && (
+                        <Alert>
+                          <AlertCircle className="h-4 w-4" />
+                          <AlertDescription className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-foreground">{selectedFileDisclosure.title}</span>
+                              <Badge variant={selectedFileDisclosure.transmission === 'never' ? 'outline' : 'default'}>
+                                {selectedFileDisclosure.transmissionLabel}
+                              </Badge>
+                            </div>
+                            <p className="leading-6">{selectedFileDisclosure.message}</p>
+                          </AlertDescription>
+                        </Alert>
+                      )}
                     </div>
-                    <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                      <div className="h-full bg-primary animate-pulse" style={{ width: '100%' }} />
-                    </div>
-                  </div>
-                )}
+
+                    <Button
+                      onClick={() => file && handleFileRead(file)}
+                      disabled={status === 'reading' || status === 'uploading' || !file}
+                      className="w-full h-12 text-base font-semibold"
+                      size="lg"
+                    >
+                      {status === 'reading' || status === 'uploading' ? (
+                        <>
+                          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                          파일 처리 중...
+                        </>
+                      ) : (
+                        selectedFileDisclosure
+                          ? selectedFileDisclosure.buttonLabel
+                          : '파일 처리하기'
+                      )}
+                    </Button>
+
+                    {(status === 'reading' || status === 'uploading') && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">
+                            {status === 'reading' ? '텍스트 추출 중' : 'API 처리 중'}
+                          </span>
+                        </div>
+                        <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                          <div className="h-full bg-primary animate-pulse" style={{ width: '100%' }} />
+                        </div>
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="law" className="mt-5">
+                    <LawSearchPanel key={inputKey} onLoadLaw={handleLawRead} />
+                  </TabsContent>
+                </Tabs>
               </CardContent>
             </Card>
           </TabsContent>

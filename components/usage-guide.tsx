@@ -40,8 +40,8 @@ const maxFileSizeMb = MAX_FILE_SIZE_BYTES / 1024 / 1024;
 const steps = [
   {
     icon: Upload,
-    title: '파일 업로드',
-    description: '한 번에 파일 하나를 선택해 텍스트를 추출합니다.',
+    title: '자료 가져오기',
+    description: '파일 하나를 업로드하거나 현행 법령을 검색해 원문을 가져옵니다.',
   },
   {
     icon: ScanText,

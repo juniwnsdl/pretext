@@ -45,7 +45,7 @@ export interface ExtractedDocument {
   version: 1;
   fileName: string;
   sourceFormat: string;
-  extractionMethod: 'local-text' | 'local-excel' | 'local-docx' | 'miso' | 'user-edited';
+  extractionMethod: 'local-text' | 'local-excel' | 'local-docx' | 'miso' | 'law-api' | 'user-edited';
   blocks: DocumentBlock[];
   warnings: PreprocessIssue[];
 }

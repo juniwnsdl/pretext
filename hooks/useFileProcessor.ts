@@ -26,6 +26,7 @@ import {
   type ExcelHeaderRowUpdate,
 } from '@/lib/excel-layout-settings';
 import type { DocType } from '@/lib/text-preprocessor';
+import type { MolegLawSearchItem } from '@/lib/moleg-law-types';
 
 export type ProcessStats = PreprocessResult['stats'];
 export type ProcessorStatus =
@@ -61,6 +62,7 @@ export interface UseFileProcessorReturn {
   reset: () => void;
 
   handleFileRead: (file: File) => Promise<void>;
+  handleLawRead: (law: MolegLawSearchItem) => Promise<void>;
   processText: () => Promise<void>;
   reprocessExcel: (updates: ExcelHeaderRowUpdate[]) => Promise<void>;
   redecodeText: (encoding: 'utf-8' | 'euc-kr') => Promise<void>;
@@ -80,6 +82,18 @@ interface ApplyExtractionOptions {
 interface PreprocessApiResponse {
   success?: boolean;
   data?: PreprocessResult;
+  error?: string | { message?: unknown };
+}
+
+interface ApiErrorPayload {
+  error?: string | { message?: unknown };
+}
+
+interface LawContentApiResponse {
+  success?: boolean;
+  data?: {
+    document?: ExtractedDocument;
+  } & Record<string, unknown>;
   error?: string | { message?: unknown };
 }
 
@@ -221,7 +235,7 @@ function documentSourceLength(document: ExtractedDocument | null, fallback: numb
   }, 0);
 }
 
-function apiErrorMessage(payload: PreprocessApiResponse): string {
+function apiErrorMessage(payload: ApiErrorPayload): string {
   if (typeof payload.error === 'string' && payload.error.trim()) return payload.error;
   if (
     typeof payload.error === 'object'
@@ -487,6 +501,43 @@ export function useFileProcessor(): UseFileProcessorReturn {
     }
   }, [applyExtraction, cancelPendingWork, clearSourceState]);
 
+  const handleLawRead = useCallback(async (law: MolegLawSearchItem) => {
+    cancelPendingWork();
+    const operationId = fileOperationRef.current;
+    clearSourceState();
+    setFileState(null);
+    setError(null);
+    setStatus('reading');
+    const controller = new AbortController();
+    fileAbortRef.current = controller;
+
+    try {
+      const query = new URLSearchParams({
+        mst: law.mst,
+        effectiveDate: law.effectiveDate,
+      });
+      const response = await fetch(`/api/laws/content?${query.toString()}`, {
+        signal: controller.signal,
+      });
+      const payload = await response.json() as LawContentApiResponse;
+      if (!response.ok || payload.success !== true || !payload.data?.document) {
+        throw new Error(apiErrorMessage(payload));
+      }
+      if (operationId !== fileOperationRef.current || controller.signal.aborted) return;
+
+      applyExtraction(payload.data.document);
+      setDocTypeState('law');
+      setStatus('idle');
+    } catch (caught) {
+      if (operationId !== fileOperationRef.current || isAbortError(caught)) return;
+      console.error('Law content error:', caught);
+      setError(errorMessage(caught, '법령 본문을 가져오지 못했습니다.'));
+      setStatus('error');
+    } finally {
+      if (fileAbortRef.current === controller) fileAbortRef.current = null;
+    }
+  }, [applyExtraction, cancelPendingWork, clearSourceState]);
+
   const redecodeText = useCallback(async (encoding: 'utf-8' | 'euc-kr') => {
     const retained = textFileRef.current;
     if (!retained) {
@@ -629,6 +680,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     updateChunks,
     reset,
     handleFileRead,
+    handleLawRead,
     processText,
     reprocessExcel,
     redecodeText,
