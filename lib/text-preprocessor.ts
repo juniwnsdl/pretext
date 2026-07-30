@@ -14,6 +14,10 @@ import {
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './preprocessing/general-chunker.ts';
 import {
+  chunkContractDocument,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './preprocessing/contract-chunker.ts';
+import {
   chunkWorkbookDocument,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './preprocessing/excel-chunker.ts';
@@ -87,7 +91,7 @@ export function preprocessExtractedDocument(
         return chunkWorkbookDocument(preparedDocument);
       case 'general':
       default:
-        return chunkGeneralDocument(preparedDocument);
+        return chunkContractDocument(preparedDocument) ?? chunkGeneralDocument(preparedDocument);
     }
   })();
 

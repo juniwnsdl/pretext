@@ -34,6 +34,7 @@ import {
   MISO_IMAGE_EXTENSIONS,
 } from '@/lib/file-processing-policy';
 import { HELP_TABS, type HelpSectionId } from '@/lib/help-guide-layout';
+import { EXCEL_PREPROCESS_HELP_GUIDANCE } from '@/lib/preprocess-limits';
 
 const maxFileSizeMb = MAX_FILE_SIZE_BYTES / 1024 / 1024;
 
@@ -45,7 +46,7 @@ const steps = [
   },
   {
     icon: ScanText,
-    title: '텍스트 확인',
+    title: '텍스트 추출 확인',
     description: '누락·깨짐·불필요한 문구가 없는지 원문과 비교합니다.',
   },
   {
@@ -65,22 +66,34 @@ const steps = [
   },
 ];
 
+const commonDocumentRules = [
+  '페이지 번호는 원문 대조를 위해 남기고, 페이지 주변에서 반복되는 짧은 머리말·꼬리말은 첫 번째만 남깁니다.',
+  '각 청크에 문서명과 위치·섹션·시트처럼 검색에 필요한 문맥을 붙입니다.',
+  'MISO 구분자는 @@@로 고정하며, 원문의 @@@는 구분자와 충돌하지 않게 바꿉니다.',
+  'MISO의 4,000자 제한에 대비해 청크당 3,800자를 안전 상한으로 사용합니다.',
+  '표와 반복되는 업무 문장은 최대한 보존하고, 원문에 없는 “(계속)” 문구를 만들지 않습니다.',
+];
+
 const documentTypes = [
   {
     name: '법령·사규',
-    description: '편·장·절·관·조문 구조를 인식해 조문 단위 문맥을 보존합니다.',
+    selection: '편·장·절·관·조, 부칙·별표·별지처럼 규정 계층이 중심인 문서',
+    rules: '전체 계층과 조문 위치를 문맥으로 붙이고, 긴 조문은 항·호 등 자연스러운 경계를 우선해 나눕니다. 표도 해당 위치 문맥과 함께 보존합니다.',
   },
   {
-    name: '표·엑셀 데이터',
-    description: '시트명과 열 제목을 보존하고 표의 행이 가능한 한 함께 있도록 나눕니다.',
+    name: '엑셀·내부 데이터',
+    selection: '행과 열로 구성된 표 데이터나 여러 시트가 있는 통합문서',
+    rules: '시트와 빈 행으로 구분된 표 영역을 섞지 않습니다. 저장된 반복 머리행을 우선 사용하고, 없으면 자동 감지하며, 머리행 범위를 직접 수정할 수 있습니다.',
   },
   {
     name: '설명서·업무 매뉴얼',
-    description: '번호 제목과 작업 절차가 중간에서 끊기지 않도록 구조 중심으로 나눕니다.',
+    selection: '소제목, 번호 단계, 작업 절차, 주의·경고 문구가 중심인 문서',
+    rules: '섹션과 작업 단계를 기준으로 묶고 주의·안전 문구를 인접한 작업과 함께 유지합니다. 표에는 해당 섹션 문맥을 붙입니다.',
   },
   {
     name: '일반 문서·보고서',
-    description: '문단·표·조문형 제목을 함께 고려하는 범용 방식으로 정리합니다.',
+    selection: '보고서, 회의자료, 계약서 등 나머지 일반 문서',
+    rules: '제목·문단·목록·표 경계를 기준으로 나눕니다. 구조화된 DOCX 계약서는 중복 조문 목차를 정리하고 완전한 조문과 조문 문맥을 우선 보존합니다.',
   },
 ];
 
@@ -204,7 +217,7 @@ function NecessityGuide() {
         </div>
 
         <p className="rounded-lg bg-primary/10 px-4 py-3 text-sm font-medium leading-6">
-          따라서 텍스트 확인과 결과 검토 단계에서 누락, 제목, 표, 내용 단위가 자연스럽게 나뉘었는지 반드시 확인해야 합니다.
+          따라서 텍스트 추출 확인과 결과 검토 단계에서 누락, 제목, 표, 내용 단위가 자연스럽게 나뉘었는지 반드시 확인해야 합니다.
         </p>
       </CardContent>
     </Card>
@@ -308,6 +321,7 @@ function SupportScopeGuide() {
       <AlertDescription>
         <ul className="mt-2 list-disc space-y-1 pl-5 leading-6">
           <li>파일당 최대 용량은 {maxFileSizeMb}MB입니다. 큰 엑셀은 브라우저 메모리에 따라 처리가 느리거나 실패할 수 있습니다.</li>
+          <li>{EXCEL_PREPROCESS_HELP_GUIDANCE}</li>
           <li>
             엑셀은 탭(시트)이 많거나 서로 다른 업무·기간·부서의 내용이 섞여 있으면 주제별 파일로 나눠 처리하는 것을 권장합니다.
             고정된 탭 개수 제한은 없지만, 관련된 시트는 함께 두고 관계없는 시트 묶음만 나누세요.
@@ -385,47 +399,43 @@ function UsageStepsGuide() {
   );
 }
 
-function DocumentTypesGuide() {
+function DocumentRulesGuide() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>문서 종류 선택 기준</CardTitle>
-        <CardDescription>내용의 주된 구조와 가장 가까운 유형 하나를 선택하세요.</CardDescription>
+        <CardTitle>문서 종류별 정리 기준</CardTitle>
+        <CardDescription>
+          먼저 공통 기준을 확인한 뒤, 내용의 주된 구조와 가장 가까운 유형 하나를 선택하세요.
+        </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-2">
-        {documentTypes.map((type) => (
-          <div key={type.name} className="rounded-lg border p-4">
-            <p className="font-semibold">{type.name}</p>
-            <p className="mt-1 text-sm leading-6 text-muted-foreground">{type.description}</p>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
+      <CardContent className="space-y-5">
+        <section className="rounded-lg border bg-muted/30 p-4">
+          <h3 className="font-semibold">모든 문서에 공통으로 적용</h3>
+          <ul className="mt-3 grid gap-2 md:grid-cols-2">
+            {commonDocumentRules.map((rule) => (
+              <li key={rule} className="flex gap-2 text-sm leading-6">
+                <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-primary" />
+                <span>{rule}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
 
-function AutomaticRulesGuide() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>자동 정리 기준</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ul className="grid gap-3 md:grid-cols-2">
-          {[
-            '페이지 번호는 원문 확인을 위해 그대로 둡니다.',
-            '여러 페이지에서 반복되는 짧은 머릿글은 첫 번째만 남깁니다.',
-            'MISO 최대 길이는 4,000자이며, 앱은 3,800자를 안전 상한으로 사용합니다.',
-            '3,800자를 넘는 조문은 분할하고 각 청크에 같은 조문 제목을 붙입니다.',
-            '분할 제목에 “(계속)” 같은 임의 문구를 추가하지 않습니다.',
-            '표와 반복된 업무 문장은 머릿글로 단정하지 않고 최대한 보존합니다.',
-          ].map((rule) => (
-            <li key={rule} className="flex gap-2 rounded-lg border p-3 text-sm leading-6">
-              <CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-primary" />
-              <span>{rule}</span>
-            </li>
+        <div className="grid gap-3 md:grid-cols-2">
+          {documentTypes.map((type) => (
+            <section key={type.name} className="rounded-lg border p-4">
+              <h3 className="font-semibold">{type.name}</h3>
+              <p className="mt-3 text-xs font-medium text-foreground">이런 문서에 선택</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{type.selection}</p>
+              <p className="mt-3 text-xs font-medium text-foreground">정리 방식</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{type.rules}</p>
+            </section>
           ))}
-        </ul>
+        </div>
+
+        <p className="rounded-lg bg-primary/10 px-4 py-3 text-sm leading-6">
+          <strong>[위임전결규정 매뉴얼]</strong>과 A~J 항목 구조가 확인되면 엑셀·내부 데이터 외 유형에서 전용 기준을 우선 적용합니다.
+        </p>
       </CardContent>
     </Card>
   );
@@ -439,7 +449,7 @@ function ReviewCautionsGuide() {
       <AlertDescription>
         <ul className="mt-2 list-disc space-y-1 pl-5 leading-6">
           <li>4,000자는 토큰 수가 아니라 문자 수 기준입니다. MISO RAG의 실제 제한과 검색 품질은 등록 후 별도로 확인하세요.</li>
-          <li>다운로드 전에 텍스트 확인과 결과 검토 화면에서 제목, 표, 숫자, 개인정보를 원문과 대조하세요.</li>
+          <li>다운로드 전에 텍스트 추출 확인과 결과 검토 화면에서 제목, 표, 숫자, 개인정보를 원문과 대조하세요.</li>
         </ul>
       </AlertDescription>
     </Alert>
@@ -460,10 +470,8 @@ function GuideSection({ sectionId }: { sectionId: HelpSectionId }) {
       return <ToolPurposeGuide />;
     case 'steps':
       return <UsageStepsGuide />;
-    case 'document-types':
-      return <DocumentTypesGuide />;
-    case 'automatic-rules':
-      return <AutomaticRulesGuide />;
+    case 'document-rules':
+      return <DocumentRulesGuide />;
     case 'review-cautions':
       return <ReviewCautionsGuide />;
   }

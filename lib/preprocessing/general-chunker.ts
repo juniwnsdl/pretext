@@ -7,6 +7,10 @@ import {
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './contracts.ts';
 import {
+  orderedListOrdinals,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './core.ts';
+import {
   parseLegalHeading,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './law-chunker.ts';
@@ -58,7 +62,31 @@ function stripMarkdownHeading(line: string): string | null {
 }
 
 function isSentenceLikeTitle(value: string): boolean {
-  return /(?:다|요|시오|세요)(?:[.!?。！？])?$/u.test(value) || /[.!?。！？]$/u.test(value);
+  // Bare 요 would misclassify noun titles such as "개요"; only polite
+  // sentence endings count.
+  return /(?:다|시오|세요|에요|예요|해요|아요|어요|네요|지요|죠)(?:[.!?。！？])?$/u.test(value) ||
+    /[.!?。！？]$/u.test(value);
+}
+
+/**
+ * English section titles ("GENERAL", "1. CODES AND STANDARDS", "P & ID") are
+ * written in capitals in engineering specifications. Lines containing any
+ * Hangul never match, so Korean handling is unaffected.
+ */
+export function isEnglishCapsHeading(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length < 4 || trimmed.length > 80) return false;
+  if (/[가-힣ㄱ-ㅎㅏ-ㅣ]/u.test(trimmed) || /[.!?]$/u.test(trimmed)) return false;
+  const body = trimmed.replace(/^\d+(?:\.\d+)*[.)]?\s+/u, '');
+  const letters = body.replace(/[^A-Za-z]/gu, '');
+  return letters.length >= 3 && letters === letters.toUpperCase();
+}
+
+/** "Section 3", "Chapter 2.", "Appendix A" style English structural titles. */
+function isEnglishStructuralHeading(value: string): boolean {
+  return value.length <= 80 &&
+    /^(?:Section|Chapter|Part|Volume|Appendix|Annex|Attachment)\s+[A-Z0-9][\w.-]*(?:\s+\S.*)?$/iu.test(value) &&
+    !/[.!?]$/u.test(value.replace(/^(?:Section|Chapter|Part|Volume|Appendix|Annex|Attachment)\s+[A-Z0-9][\w.]*\.?/iu, ''));
 }
 
 function parseGeneralHeading(line: string, insideArticle: boolean): GeneralHeading | null {
@@ -89,15 +117,49 @@ function parseGeneralHeading(line: string, insideArticle: boolean): GeneralHeadi
   if (/^제\s*\d+\s*(?:편|장|절|관)(?:\s+\S.*)?$/u.test(value) && !isSentenceLikeTitle(value)) {
     return { text: value, inlineBody: '', kind: 'structural' };
   }
+  // Circled numbers (①) and single-syllable markers (가., 나)) are list or
+  // clause markers far more often than headings; promoting them fragments
+  // checklists into context-only chunks.
   if (
     !insideArticle &&
     value.length <= 80 &&
-    /^(?:\d+(?:\.\d+)*(?:[.)]|\s*-\s*\d+)?|[가-힣][.)]|[①-⑳])\s+\S/u.test(value) &&
+    /^\d+(?:\.\d+)*(?:[.)]|\s*-\s*\d+)?\s+\S/u.test(value) &&
     !isSentenceLikeTitle(value)
   ) {
     return { text: value, inlineBody: '', kind: 'numbered' };
   }
+  if (!insideArticle && (isEnglishCapsHeading(value) || isEnglishStructuralHeading(value))) {
+    return { text: value, inlineBody: '', kind: 'structural' };
+  }
   return null;
+}
+
+/**
+ * Numbered lines that form a consecutive sibling run (1., 2., 3. on adjacent
+ * lines) are a list, not a stack of headings; promoting each would fragment
+ * the list into context-only chunks.
+ */
+function demotedNumberedLineIndexes(lines: string[]): Set<number> {
+  const sequence = lines
+    .map((line, index) => ({
+      index,
+      blank: line.trim().length === 0,
+      value: line.match(/^(\d+)[.)]\s+\S/u) ? Number(line.match(/^(\d+)[.)]/u)?.[1]) : null,
+    }))
+    .filter((entry) => !entry.blank);
+  const demoted = new Set<number>();
+  for (let position = 0; position < sequence.length; position += 1) {
+    const entry = sequence[position];
+    if (entry.value === null) continue;
+    const next = sequence[position + 1];
+    const previous = sequence[position - 1];
+    const nextIsSuccessor = next?.value !== null && next !== undefined && next.value === entry.value + 1;
+    const previousWasDemotedPredecessor = Boolean(
+      previous && demoted.has(previous.index) && previous.value === entry.value - 1,
+    );
+    if (nextIsSuccessor || previousWasDemotedPredecessor) demoted.add(entry.index);
+  }
+  return demoted;
 }
 
 function isMarkdownTableLine(line: string): boolean {
@@ -117,11 +179,11 @@ function trimBoundaryBlankLines(lines: Array<{ text: string; sourceId: string }>
   return lines.slice(start, end);
 }
 
-function renderListItem(block: DocumentBlock): string {
+function renderListItem(block: DocumentBlock, ordinal?: number): string {
   const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
   const depth = Math.max(0, block.depth ?? 0);
   const indentation = '  '.repeat(depth);
-  const marker = block.ordered ? '1. ' : '- ';
+  const marker = block.ordered ? `${ordinal ?? 1}. ` : '- ';
   const firstLine = lines[0].replace(/^\s*(?:[-*+•◦]|\d+[.)])\s+/u, '');
   const continuationIndentation = `${indentation}   `;
   return [
@@ -132,6 +194,7 @@ function renderListItem(block: DocumentBlock): string {
 
 function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
   const units: GeneralUnit[] = [];
+  const listOrdinals = orderedListOrdinals(document.blocks);
   let activePath: string[] = [];
   let activeHeadingKind: GeneralHeading['kind'] | null = null;
   let pendingHeadingSourceIds: string[] = [];
@@ -191,6 +254,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
   };
 
   const acceptLines = (lines: string[], sourceId: string): void => {
+    const demotedNumberedLines = demotedNumberedLineIndexes(lines);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       if (
@@ -209,8 +273,11 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       }
 
       const heading = parseGeneralHeading(line, activeHeadingKind === 'article');
-      if (heading) acceptHeading(heading, sourceId);
-      else bodyLines.push({ text: line, sourceId });
+      if (heading && !(heading.kind === 'numbered' && demotedNumberedLines.has(index))) {
+        acceptHeading(heading, sourceId);
+      } else {
+        bodyLines.push({ text: line, sourceId });
+      }
     }
   };
 
@@ -250,12 +317,29 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
     if (block.kind === 'raw-text') {
       acceptLines((block.text ?? '').replace(/\r\n?/gu, '\n').split('\n'), block.id);
     } else if (block.kind === 'list-item') {
-      bodyLines.push({ text: renderListItem(block), sourceId: block.id });
+      // Word numbering-styled section headings arrive as top-level ordered
+      // list items ("GENERAL", "PIPING DESIGN"); Hangul lines never qualify.
+      const itemText = (block.text ?? '').trim();
+      if ((block.depth ?? 0) === 0 && isEnglishCapsHeading(itemText)) {
+        acceptHeading({ text: itemText, inlineBody: '', kind: 'structural' }, block.id);
+      } else {
+        bodyLines.push({ text: renderListItem(block, listOrdinals.get(block.id)), sourceId: block.id });
+      }
     } else {
-      bodyLines.push(
-        ...(block.text ?? '').replace(/\r\n?/gu, '\n').split('\n')
-          .map((text) => ({ text, sourceId: block.id })),
-      );
+      // Style-less headings inside paragraph blocks: only unambiguous forms
+      // (multi-level numbering, English capitals/structural titles) promote,
+      // so single-level Korean list paragraphs stay body text.
+      for (const text of (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n')) {
+        const heading = parseGeneralHeading(text, activeHeadingKind === 'article');
+        const unambiguous = heading && (
+          heading.kind === 'markdown' ||
+          heading.kind === 'article' ||
+          (heading.kind === 'structural') ||
+          (heading.kind === 'numbered' && /^\d+\.\d+/u.test(heading.text))
+        );
+        if (unambiguous) acceptHeading(heading, block.id);
+        else bodyLines.push({ text, sourceId: block.id });
+      }
     }
   }
   flushText();
@@ -306,6 +390,20 @@ export function chunkGeneralDocument(document: ExtractedDocument): ChunkingOutpu
       sourceBlockIds: claimSourceIds(unit.sourceBlockIds, claimed),
       warnings: [],
     });
+  }
+
+  // A heading with no body of its own (a parent title directly followed by a
+  // subsection) would emit a context-only chunk; carry the title into the
+  // next text chunk instead.
+  for (let index = drafts.length - 2; index >= 0; index -= 1) {
+    const draft = drafts[index];
+    if (draft.body.trim().length > 0) continue;
+    const title = draft.contextLines[1]?.replace(/^\[섹션\] /u, '');
+    const next = drafts[index + 1];
+    if (!title || title === '전문' || !next || next.body.startsWith('|')) continue;
+    next.body = next.body.trim().length > 0 ? `${title}\n${next.body}` : title;
+    next.sourceBlockIds = [...draft.sourceBlockIds, ...next.sourceBlockIds];
+    drafts.splice(index, 1);
   }
 
   return {

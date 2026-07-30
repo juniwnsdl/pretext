@@ -5,8 +5,7 @@ export type HelpSectionId =
   | 'support-scope'
   | 'tool-purpose'
   | 'steps'
-  | 'document-types'
-  | 'automatic-rules'
+  | 'document-rules'
   | 'review-cautions';
 
 export type HelpTabId = 'understanding' | 'usage';
@@ -31,8 +30,7 @@ export const HELP_TABS: readonly HelpTab[] = [
       'steps',
       'file-routing',
       'support-scope',
-      'document-types',
-      'automatic-rules',
+      'document-rules',
       'review-cautions',
     ],
   },

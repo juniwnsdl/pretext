@@ -6,6 +6,21 @@ import {
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './preprocessing/contracts.ts';
 import {
+  PREPROCESS_INPUT_TOO_LARGE_MESSAGE,
+  PREPROCESS_MAX_AGGREGATE_STRUCTURE_ITEMS,
+  PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH,
+  PREPROCESS_MAX_DOCUMENT_BLOCKS,
+  PREPROCESS_MAX_HEADING_PATH_DEPTH,
+  PREPROCESS_MAX_ISSUE_LOCATIONS,
+  PREPROCESS_MAX_TABLE_CELLS,
+  PREPROCESS_MAX_TABLE_COLUMNS,
+  PREPROCESS_MAX_TABLE_MERGES,
+  PREPROCESS_MAX_TABLE_ROWS,
+  PREPROCESS_MAX_WARNINGS,
+  PREPROCESS_TEXT_TOO_LARGE_MESSAGE,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './preprocess-limits.ts';
+import {
   normalizeDocType,
   type DocType,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
@@ -56,17 +71,18 @@ const EXTRACTION_METHODS = new Set<ExtractedDocument['extractionMethod']>([
   'user-edited',
 ]);
 
-// Public JSON budgets: table limits match the local DOCX logical-grid safety caps.
-export const PREPROCESS_MAX_DOCUMENT_BLOCKS = 10_000;
-export const PREPROCESS_MAX_WARNINGS = 1_000;
-export const PREPROCESS_MAX_HEADING_PATH_DEPTH = 64;
-export const PREPROCESS_MAX_TABLE_ROWS = 5_000;
-export const PREPROCESS_MAX_TABLE_COLUMNS = 512;
-export const PREPROCESS_MAX_TABLE_CELLS = 100_000;
-export const PREPROCESS_MAX_TABLE_MERGES = 10_000;
-export const PREPROCESS_MAX_ISSUE_LOCATIONS = 10_000;
-export const PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH = 50_000_000;
-export const PREPROCESS_MAX_AGGREGATE_STRUCTURE_ITEMS = 1_000_000;
+export {
+  PREPROCESS_MAX_AGGREGATE_STRUCTURE_ITEMS,
+  PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH,
+  PREPROCESS_MAX_DOCUMENT_BLOCKS,
+  PREPROCESS_MAX_HEADING_PATH_DEPTH,
+  PREPROCESS_MAX_ISSUE_LOCATIONS,
+  PREPROCESS_MAX_TABLE_CELLS,
+  PREPROCESS_MAX_TABLE_COLUMNS,
+  PREPROCESS_MAX_TABLE_MERGES,
+  PREPROCESS_MAX_TABLE_ROWS,
+  PREPROCESS_MAX_WARNINGS,
+};
 
 function failure(
   code: PreprocessRequestError['code'],
@@ -326,7 +342,7 @@ function normalizeDocument(value: unknown):
     return { ok: false, error: { code: 'INVALID_DOCUMENT', message: 'Document shape is invalid.' } };
   }
   if (exceedsDocumentBudgets(value, value.blocks, value.warnings)) {
-    return { ok: false, error: { code: 'INPUT_TOO_LARGE', message: 'Document exceeds preprocessing input limits.' } };
+    return { ok: false, error: { code: 'INPUT_TOO_LARGE', message: PREPROCESS_INPUT_TOO_LARGE_MESSAGE } };
   }
   if (!value.warnings.every(validIssue)) {
     return { ok: false, error: { code: 'INVALID_DOCUMENT', message: 'Document shape is invalid.' } };
@@ -382,7 +398,7 @@ export function normalizePreprocessRequest(input: unknown): PreprocessRequestRes
       return failure('EMPTY_INPUT', 'Text input must not be empty.');
     }
     if (input.text.length > PREPROCESS_MAX_AGGREGATE_TEXT_LENGTH) {
-      return failure('INPUT_TOO_LARGE', 'Text input exceeds preprocessing input limits.');
+      return failure('INPUT_TOO_LARGE', PREPROCESS_TEXT_TOO_LARGE_MESSAGE);
     }
     document = {
       version: 1,

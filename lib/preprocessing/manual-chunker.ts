@@ -8,6 +8,7 @@ import {
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './contracts.ts';
 import {
+  orderedListOrdinals,
   splitTextPreservingSeparators,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './core.ts';
@@ -32,6 +33,7 @@ interface TableUnit {
   kind: 'table';
   block: DocumentBlock;
   sourceIds: string[];
+  safetyLines?: string[];
 }
 
 type ManualUnit = TextUnit | TableUnit;
@@ -72,7 +74,9 @@ export function classifyManualLine(line: string): ManualLineKind {
   const numbered = trimmed.match(numberedPrefix);
   if (numbered) {
     if (knownSectionTitle.test(trimmed.slice(numbered[0].length).trim())) return 'section';
-    return imperativeEnding.test(trimmed) ? 'step' : 'section';
+    if (imperativeEnding.test(trimmed)) return 'step';
+    // A section title fits on a short line; long numbered prose is body.
+    return trimmed.length <= 80 ? 'section' : 'paragraph';
   }
   return 'paragraph';
 }
@@ -140,15 +144,34 @@ function appendUnpairedSafety(section: ManualSection): void {
   if (section.pendingSafety.length === 0) return;
   const text = pendingSafetyText(section);
   const sourceIds = pendingSafetySourceIds(section);
-  appendText(
-    section,
-    `${text}\n[BLOCKED: safety label has no adjacent instruction.]`,
-    sourceIds,
-    'orphan-safety',
-  );
+
+  // A label that trails a table annotates that table; frame the table with it
+  // instead of reporting an orphan.
+  for (let index = section.units.length - 1; index >= 0; index -= 1) {
+    const unit = section.units[index];
+    if (unit.kind === 'text' && unit.text.trim().length === 0) continue;
+    if (unit.kind === 'table') {
+      unit.safetyLines = [...(unit.safetyLines ?? []), ...section.pendingSafety.map((entry) => entry.text)];
+      unit.sourceIds = unique([...unit.sourceIds, ...sourceIds]);
+      section.pendingSafety = [];
+      return;
+    }
+    break;
+  }
+
+  // In a safety-rules section (안전 수칙, 주의 사항, …) bare labels are the
+  // section's content, not orphans awaiting a step.
+  if (section.path.some((entry) => /안전|주의|수칙|경고|위험/u.test(entry))) {
+    appendText(section, text, sourceIds, 'instruction');
+    section.pendingSafety = [];
+    return;
+  }
+  // A label without an adjacent instruction is still content; keep it and
+  // surface a review warning instead of blocking the whole document.
+  appendText(section, text, sourceIds, 'instruction');
   section.warnings.push({
     code: 'manual-safety-without-adjacent-instruction',
-    severity: 'error',
+    severity: 'warning',
     message: `Safety label has no adjacent instruction: ${text}`,
     locations: unique(sourceIds),
   });
@@ -203,11 +226,11 @@ function appendRawLine(section: ManualSection, line: string, sourceId: string): 
   appendPendingSafetyToInstruction(section, line, sourceId, 'instruction');
 }
 
-function renderStructuredListItem(block: DocumentBlock): string {
+function renderStructuredListItem(block: DocumentBlock, ordinal?: number): string {
   const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
   const depth = Math.max(0, block.depth ?? 0);
   const indentation = '  '.repeat(depth);
-  const marker = block.ordered ? '1. ' : '- ';
+  const marker = block.ordered ? `${ordinal ?? 1}. ` : '- ';
   const firstLine = lines[0].replace(/^\s*(?:[-*+•◦]|\d+[.)])\s+/u, '');
   const continuationIndentation = `${indentation}   `;
   return [
@@ -220,6 +243,75 @@ function createSection(path: string[], headingSourceIds: string[] = []): ManualS
   return { path, headingSourceIds, units: [], pendingSafety: [], warnings: [] };
 }
 
+/** Moves pending safety out of the section so it can frame an adjacent table. */
+function takePendingSafety(section: ManualSection): { lines: string[]; sourceIds: string[] } {
+  const lines = section.pendingSafety.map((entry) => entry.text);
+  const sourceIds = pendingSafetySourceIds(section);
+  section.pendingSafety = [];
+  return { lines, sourceIds };
+}
+
+interface SectionOrdinal {
+  family: string;
+  value: number;
+}
+
+const HANGUL_ORDER = '가나다라마바사아자차카타파하';
+
+/** Reads the ordinal marker of a numbered line so sibling runs can be detected. */
+function sectionLineOrdinal(line: string): SectionOrdinal | null {
+  const trimmed = line.trim();
+  let match = trimmed.match(/^(\d+)-(\d+)\s+/u);
+  if (match) return { family: `dash-${match[1]}`, value: Number(match[2]) };
+  match = trimmed.match(/^(\d+)[.)]\s+/u);
+  if (match) return { family: 'arabic', value: Number(match[1]) };
+  match = trimmed.match(/^([①-⑳])\s*/u);
+  if (match) return { family: 'circled', value: match[1].codePointAt(0)! - 0x2460 + 1 };
+  match = trimmed.match(/^([가-힣])\)\s+/u);
+  if (match) {
+    const order = HANGUL_ORDER.indexOf(match[1]);
+    return order >= 0 ? { family: 'hangul', value: order + 1 } : null;
+  }
+  match = trimmed.match(/^(?:step|단계)\s*(\d+)/iu);
+  if (match) return { family: 'step', value: Number(match[1]) };
+  return null;
+}
+
+/**
+ * Section-classified numbered lines that form a consecutive sibling run
+ * (1., 2., 3. on adjacent lines) are a list, not a stack of headings —
+ * treating each as a section silently drops every title but the last.
+ */
+function demotedSectionLineIndexes(lines: string[]): Set<number> {
+  const sequence = lines
+    .map((line, index) => ({
+      index,
+      blank: line.trim().length === 0,
+      section: classifyManualLine(line) === 'section',
+      ordinal: sectionLineOrdinal(line),
+    }))
+    .filter((entry) => !entry.blank);
+  const demoted = new Set<number>();
+  for (let position = 0; position < sequence.length; position += 1) {
+    const entry = sequence[position];
+    if (!entry.section || !entry.ordinal) continue;
+    const next = sequence[position + 1];
+    const previous = sequence[position - 1];
+    const nextIsSuccessor = Boolean(
+      next?.section && next.ordinal &&
+      next.ordinal.family === entry.ordinal.family &&
+      next.ordinal.value === entry.ordinal.value + 1,
+    );
+    const previousWasDemotedPredecessor = Boolean(
+      previous && demoted.has(previous.index) && previous.ordinal &&
+      previous.ordinal.family === entry.ordinal.family &&
+      previous.ordinal.value === entry.ordinal.value - 1,
+    );
+    if (nextIsSuccessor || previousWasDemotedPredecessor) demoted.add(entry.index);
+  }
+  return demoted;
+}
+
 function tableFromRawLines(lines: string[], sourceId: string, index: number): DocumentBlock | null {
   const [table] = extractMarkdownTableBlocks(lines.join('\n'), `${sourceId}-manual-${index}`);
   return table ?? null;
@@ -227,6 +319,7 @@ function tableFromRawLines(lines: string[], sourceId: string, index: number): Do
 
 function parseManualSections(document: ExtractedDocument): ManualSection[] {
   const sections: ManualSection[] = [];
+  const listOrdinals = orderedListOrdinals(document.blocks);
   let current = createSection([]);
   let tableIndex = 0;
 
@@ -247,8 +340,13 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
 
     if (block.kind === 'table') {
       if (block.headingPath.length > 0) ensurePath(block.headingPath);
-      appendUnpairedSafety(current);
-      current.units.push({ kind: 'table', block, sourceIds: [block.id] });
+      const safety = takePendingSafety(current);
+      current.units.push({
+        kind: 'table',
+        block,
+        sourceIds: unique([...safety.sourceIds, block.id]),
+        ...(safety.lines.length > 0 ? { safetyLines: safety.lines } : {}),
+      });
       continue;
     }
 
@@ -268,7 +366,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
       } else if (text) {
         appendPendingSafetyToInstruction(
           current,
-          renderStructuredListItem(block),
+          renderStructuredListItem(block, listOrdinals.get(block.id)),
           block.id,
           'step',
         );
@@ -279,6 +377,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
     if (block.kind !== 'raw-text') continue;
 
     const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
+    const demotedSectionLines = demotedSectionLineIndexes(lines);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       if (
@@ -292,15 +391,28 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
           index += 1;
         }
         index -= 1;
-        appendUnpairedSafety(current);
+        const safety = takePendingSafety(current);
         const table = tableFromRawLines(tableLines, block.id, ++tableIndex);
-        if (table) current.units.push({ kind: 'table', block: table, sourceIds: [block.id] });
-        else appendText(current, tableLines.join('\n'), [block.id]);
+        if (table) {
+          current.units.push({
+            kind: 'table',
+            block: table,
+            sourceIds: unique([...safety.sourceIds, block.id]),
+            ...(safety.lines.length > 0 ? { safetyLines: safety.lines } : {}),
+          });
+        } else {
+          if (safety.lines.length > 0) {
+            appendText(current, safety.lines.join('\n'), safety.sourceIds);
+          }
+          appendText(current, tableLines.join('\n'), [block.id]);
+        }
         continue;
       }
 
-      if (classifyManualLine(line) === 'section') {
+      if (classifyManualLine(line) === 'section' && !demotedSectionLines.has(index)) {
         startSection([line.trim()], [block.id]);
+      } else if (demotedSectionLines.has(index)) {
+        appendPendingSafetyToInstruction(current, line, block.id, 'step');
       } else {
         appendRawLine(current, line, block.id);
       }
@@ -397,7 +509,8 @@ function renderSection(
   for (const unit of section.units) {
     if (unit.kind === 'table') {
       flush();
-      const tableOutput = chunkTableBlock(unit.block, contextLines);
+      const tableContext = [...contextLines, ...(unit.safetyLines ?? [])];
+      const tableOutput = chunkTableBlock(unit.block, tableContext);
       warnings.push(...tableOutput.warnings);
       tableOutput.drafts.forEach((tableDraft, index) => {
         const candidates = index === 0
@@ -412,17 +525,26 @@ function renderSection(
       continue;
     }
 
+    let nonStepFragments = [unit.text];
     if (unit.role !== 'step' && unit.text.length > limit) {
-      warnings.push({
-        code: 'manual-non-step-exceeds-limit',
-        severity: 'error',
-        message: 'A non-step manual unit exceeds the chunk limit and cannot be split at a step boundary.',
-        locations: unit.sourceIds,
-      });
+      // Prose that separates cleanly at paragraph or sentence boundaries is
+      // split; anything that would need an arbitrary mid-word cut is blocked.
+      const attempted = splitTextPreservingSeparators(unit.text, limit);
+      const clean = attempted.slice(0, -1).every((fragment) => /(?:\s|[.!?。！？])$/u.test(fragment));
+      if (clean && attempted.length > 1) {
+        nonStepFragments = attempted;
+      } else {
+        warnings.push({
+          code: 'manual-non-step-exceeds-limit',
+          severity: 'error',
+          message: 'A non-step manual unit exceeds the chunk limit and cannot be split at a step boundary.',
+          locations: unit.sourceIds,
+        });
+      }
     }
     const fragments = unit.role === 'step'
       ? splitOversizedStep(unit, limit)
-      : [unit.text];
+      : nonStepFragments;
     if (!fragments) {
       warnings.push({
         code: 'manual-step-safety-prefix-exceeds-limit',

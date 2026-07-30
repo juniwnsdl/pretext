@@ -4,9 +4,18 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -17,35 +26,44 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Trash2,
 } from 'lucide-react';
 import { APP_CHUNK_LIMIT } from '@/lib/preprocessing/contracts';
+import { filterIndexedChunks, removeChunkAt } from '@/lib/chunk-viewer-model';
 
 interface ChunkViewerModalProps {
   isOpen: boolean;
   onClose: () => void;
   chunks: string[];
+  onChunksChange?: (chunks: string[]) => void;
 }
 
-export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalProps) {
+export function ChunkViewerModal({
+  isOpen,
+  onClose,
+  chunks,
+  onChunksChange,
+}: ChunkViewerModalProps) {
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
   // 모달이 열릴 때 상태 초기화
   useEffect(() => {
     if (isOpen) {
       setSelectedIndex(0);
       setSearchQuery('');
-      console.log('[ChunkViewerModal] Modal opened with chunks:', chunks.length);
+      setIsDeleteDialogOpen(false);
     }
-  }, [isOpen, chunks.length]);
+  }, [isOpen]);
+
+  useEffect(() => {
+    setSelectedIndex((current) => Math.min(current, Math.max(0, chunks.length - 1)));
+  }, [chunks.length]);
 
   // 검색 필터링
   const filteredChunks = useMemo(() => {
-    if (!searchQuery.trim()) return chunks;
-    return chunks.filter((chunk, index) => 
-      chunk.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      `#${(index + 1).toString().padStart(3, '0')}`.includes(searchQuery)
-    );
+    return filterIndexedChunks(chunks, searchQuery);
   }, [chunks, searchQuery]);
 
   const selectedChunk = useMemo(() => {
@@ -66,9 +84,19 @@ export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalPr
     }
   };
 
+  const handleDelete = () => {
+    if (!onChunksChange) return;
+    const next = removeChunkAt(chunks, selectedIndex);
+    setSelectedIndex(next.selectedIndex);
+    setSearchQuery('');
+    setIsDeleteDialogOpen(false);
+    onChunksChange(next.chunks);
+  };
+
   if (!isOpen) return null;
 
   return (
+    <>
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent 
         className="!max-w-none w-[80vw] h-[80vh] flex flex-col p-0 gap-0"
@@ -108,6 +136,18 @@ export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalPr
           </p>
           
           <div className="flex items-center gap-3">
+            {onChunksChange && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setIsDeleteDialogOpen(true)}
+                disabled={chunks.length <= 1}
+                title={chunks.length <= 1 ? '마지막 청크는 삭제할 수 없습니다.' : undefined}
+              >
+                <Trash2 className="mr-1.5 h-4 w-4" />
+                청크 삭제
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -153,8 +193,7 @@ export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalPr
           <div className="w-[45%] border-r overflow-hidden">
             <ScrollArea className="h-full">
               <div className="p-4 grid grid-cols-3 gap-3">
-                {filteredChunks.map((chunk, index) => {
-                  const originalIndex = chunks.indexOf(chunk);
+                {filteredChunks.map(({ content: chunk, originalIndex }) => {
                   const isSelected = selectedIndex === originalIndex;
                   
                   return (
@@ -208,5 +247,25 @@ export function ChunkViewerModal({ isOpen, onClose, chunks }: ChunkViewerModalPr
         </div>
       </DialogContent>
     </Dialog>
+    <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>이 청크를 삭제하시겠습니까?</AlertDialogTitle>
+          <AlertDialogDescription>
+            청크 #{selectedIndex + 1}을 결과에서 삭제합니다. 삭제한 내용은 다시 전처리해야 복구할 수 있습니다.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>취소</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={handleDelete}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            삭제
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

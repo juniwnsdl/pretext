@@ -42,7 +42,6 @@ import type { DocType } from '@/lib/text-preprocessor';
 
 import { ChunkViewerModal } from '@/components/chunk-viewer-modal';
 import { ChunkFlowViewer } from '@/components/chunk-flow-viewer';
-import { PreprocessResultSummary } from '@/components/preprocess-result-summary';
 import { ExcelSettingsDialog } from '@/components/excel-settings-dialog';
 import { Switch } from '@/components/ui/switch';
 import { ProgressStepper } from '@/components/progress-stepper';
@@ -55,9 +54,8 @@ import {
   getFileProcessingDisclosure,
   getFileProcessingRoute,
 } from '@/lib/file-processing-policy';
+import { getUploadPreprocessLimitGuidance } from '@/lib/preprocess-limits';
 import {
-  APP_CHUNK_LIMIT,
-  MISO_CHUNK_LIMIT,
   MISO_SEPARATOR,
 } from '@/lib/preprocessing/contracts';
 import { getExcelSheetSettings } from '@/lib/excel-layout-settings';
@@ -152,9 +150,11 @@ export default function Home() {
   // 상태 변경 감지를 위한 ref
   const prevStatusRef = useRef(status);
   const prevErrorRef = useRef(error);
-  const selectedFileDisclosure = file
-    ? getFileProcessingDisclosure(getFileProcessingRoute(file.name))
+  const selectedFileRoute = file ? getFileProcessingRoute(file.name) : null;
+  const selectedFileDisclosure = selectedFileRoute
+    ? getFileProcessingDisclosure(selectedFileRoute)
     : null;
+  const selectedFileLimitGuidance = getUploadPreprocessLimitGuidance(selectedFileRoute);
   const excelSheetSettings = useMemo(
     () => getExcelSheetSettings(sourceDocument),
     [sourceDocument],
@@ -352,7 +352,7 @@ export default function Home() {
     },
     {
       id: 'input',
-      label: '텍스트 확인',
+      label: '텍스트 추출 확인',
       status: inputText 
         ? result !== null
           ? 'completed' as const 
@@ -363,7 +363,7 @@ export default function Home() {
     },
     {
       id: 'process',
-      label: '전처리',
+      label: '전처리 설정',
       status: result !== null
         ? 'completed' as const 
         : inputText && activeTab === 'process' 
@@ -450,10 +450,10 @@ export default function Home() {
               1. 자료 가져오기
             </TabsTrigger>
             <TabsTrigger value="input" disabled={!inputText} className="py-2.5">
-              2. 텍스트 확인
+              2. 텍스트 추출 확인
             </TabsTrigger>
             <TabsTrigger value="process" disabled={!inputText} className="py-2.5">
-              3. 전처리
+              3. 전처리 설정
             </TabsTrigger>
             <TabsTrigger value="output" disabled={result === null} className="py-2.5">
               4. 결과 검토
@@ -517,6 +517,11 @@ export default function Home() {
                           </AlertDescription>
                         </Alert>
                       )}
+                      {selectedFileLimitGuidance && (
+                        <p className="text-xs font-medium text-destructive">
+                          {selectedFileLimitGuidance}
+                        </p>
+                      )}
                     </div>
 
                     <Button
@@ -531,9 +536,7 @@ export default function Home() {
                           파일 처리 중...
                         </>
                       ) : (
-                        selectedFileDisclosure
-                          ? selectedFileDisclosure.buttonLabel
-                          : '파일 처리하기'
+                        '텍스트 추출'
                       )}
                     </Button>
 
@@ -559,7 +562,7 @@ export default function Home() {
             </Card>
           </TabsContent>
 
-          {/* 탭 2: 텍스트 확인 및 편집 */}
+          {/* 탭 2: 텍스트 추출 확인 및 편집 */}
           <TabsContent value="input" className="mt-6">
             <Card>
               <CardHeader>
@@ -730,7 +733,7 @@ export default function Home() {
                       onClick={() => setActiveTab('process')}
                       disabled={!inputText.trim()}
                     >
-                      다음 단계: 전처리
+                      다음 단계: 전처리 설정
                     </Button>
                   </div>
                 </div>
@@ -765,14 +768,14 @@ export default function Home() {
                   <RadioGroup
                     value={docType}
                     onValueChange={(value) => setDocType(value as DocType)}
-                    className="grid grid-cols-2 gap-4"
+                    className="grid gap-4 sm:grid-cols-2"
                   >
                     <div className="flex items-start space-x-3 border rounded-lg px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer has-[:checked]:border-primary has-[:checked]:bg-primary/5">
                       <RadioGroupItem id="doc-law" value="law" className="mt-1" />
                       <Label htmlFor="doc-law" className="flex-1 cursor-pointer font-normal">
                         <span className="block font-medium">법령·사규</span>
                         <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                          편·장·절·관·조와 부칙 구조를 우선 보존합니다
+                          편·장·절·관·조와 부칙·별표·별지의 위치 문맥을 유지합니다
                         </span>
                       </Label>
                     </div>
@@ -781,7 +784,7 @@ export default function Home() {
                       <Label htmlFor="doc-excel" className="flex-1 cursor-pointer font-normal">
                         <span className="block font-medium">엑셀·내부 데이터</span>
                         <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                          시트명과 열 제목을 유지하며 행 단위로 나눕니다
+                          시트와 머리행을 감지해 표 영역별로 나누며 머리행을 직접 수정할 수 있습니다
                         </span>
                       </Label>
                     </div>
@@ -790,7 +793,7 @@ export default function Home() {
                       <Label htmlFor="doc-manual" className="flex-1 cursor-pointer font-normal">
                         <span className="block font-medium">설명서·업무 매뉴얼</span>
                         <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                          소제목과 작업 절차가 중간에서 끊기지 않게 나눕니다
+                          소제목·작업 단계와 주의·안전 문구가 떨어지지 않게 나눕니다
                         </span>
                       </Label>
                     </div>
@@ -799,17 +802,11 @@ export default function Home() {
                       <Label htmlFor="doc-general" className="flex-1 cursor-pointer font-normal">
                         <span className="block font-medium">일반 문서·보고서</span>
                         <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                          문단과 표 구조를 기준으로 자연스럽게 나눕니다
+                          제목·문단·목록·표를 기준으로 나누고 구조화된 계약서 조문도 인식합니다
                         </span>
                       </Label>
                     </div>
                   </RadioGroup>
-                </div>
-
-                <div className="grid gap-2 rounded-lg border bg-muted/30 p-4 text-sm sm:grid-cols-3">
-                  <p><span className="text-muted-foreground">MISO 구분자:</span> <strong className="font-mono">{MISO_SEPARATOR}</strong></p>
-                  <p><span className="text-muted-foreground">MISO 최대 길이:</span> <strong>{MISO_CHUNK_LIMIT.toLocaleString()}자</strong></p>
-                  <p><span className="text-muted-foreground">앱 안전 상한:</span> <strong>{APP_CHUNK_LIMIT.toLocaleString()}자</strong></p>
                 </div>
 
                 <Button 
@@ -908,8 +905,6 @@ export default function Home() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                {result && <PreprocessResultSummary result={result} />}
-
                 {!isEditMode && showChunkFlow && isVisualizationReady ? (
                   <div className="h-[600px] rounded-lg border overflow-hidden">
                     <ChunkFlowViewer chunks={processedChunks} onChunkUpdate={updateChunks} />
@@ -977,6 +972,7 @@ export default function Home() {
           isOpen={isChunkModalOpen}
           onClose={() => setIsChunkModalOpen(false)}
           chunks={processedChunks}
+          onChunksChange={updateChunks}
         />
 
         <ExcelSettingsDialog

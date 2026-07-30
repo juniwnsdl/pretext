@@ -4,6 +4,7 @@ import {
   MISO_JOINER,
   MISO_SEPARATOR,
   type ChunkDraft,
+  type DocumentBlock,
   type PreprocessIssue,
   type PreprocessResult,
   type ResultStatus,
@@ -33,7 +34,7 @@ function issue(
 
 function isPageNumberLine(line: string): boolean {
   const value = line.trim();
-  return /^(?:\d+\s*[-–—]\s*\d+|(?:page|페이지)\s*\d+(?:\s*(?:\/|of)\s*\d+)?)$/iu.test(value);
+  return /^(?:\d+\s*[-–—]\s*\d+|[-–—]\s*\d+\s*[-–—]|(?:page|페이지)\s*\d+(?:\s*(?:\/|of)\s*\d+)?)$/iu.test(value);
 }
 
 function isDecorationCandidate(line: string): boolean {
@@ -58,15 +59,35 @@ function removeRepeatedPageDecorations(text: string): PreparedSourceText {
     positionsByValue.set(value, positions);
   });
 
+  // A header or footer block is contiguous with its page number line; body
+  // text that merely repeats near a page boundary is separated from it by at
+  // least one non-decoration line.
+  const isEvidencedByPage = (position: number): boolean =>
+    pagePositions.some((pagePosition) => {
+      if (Math.abs(pagePosition - position) > 3) return false;
+      const [low, high] = position < pagePosition
+        ? [position, pagePosition]
+        : [pagePosition, position];
+      for (let between = low + 1; between < high; between += 1) {
+        if (!isDecorationCandidate(nonEmpty[between].value)) return false;
+      }
+      return true;
+    });
+
   const removableLineIndexes = new Set<number>();
   for (const [value, positions] of positionsByValue) {
     if (!isDecorationCandidate(value)) continue;
-    const evidencedPositions = positions.filter((position) =>
-      pagePositions.some((pagePosition) => Math.abs(pagePosition - position) <= 3),
-    );
+    const evidencedPositions = positions.filter(isEvidencedByPage);
     if (evidencedPositions.length < 2) continue;
     for (const position of evidencedPositions.slice(1)) {
       removableLineIndexes.add(nonEmpty[position].lineIndex);
+    }
+  }
+
+  // Page number lines themselves are transport noise once pagination is evident.
+  if (pagePositions.length >= 2) {
+    for (const pagePosition of pagePositions) {
+      removableLineIndexes.add(nonEmpty[pagePosition].lineIndex);
     }
   }
 
@@ -76,9 +97,7 @@ function removeRepeatedPageDecorations(text: string): PreparedSourceText {
 
   return {
     text: filtered.join('\n'),
-    warnings: removableLineIndexes.size > 0
-      ? [issue('page-decoration-removed', 'warning', 'Repeated page decorations were removed.', removableLineIndexes.size)]
-      : [],
+    warnings: [issue('page-decoration-removed', 'warning', '반복되는 페이지 머리말·꼬리말을 제거했습니다.', removableLineIndexes.size)],
   };
 }
 
@@ -192,7 +211,7 @@ function resultFromChunks(
   if (safeLimitExceededCount > 0) issues.push(issue('safe-limit-exceeded', 'error', 'One or more chunks exceed the application safety limit.', safeLimitExceededCount));
   if (misoLimitExceededCount > 0) issues.push(issue('miso-limit-exceeded', 'error', 'One or more chunks exceed the MISO limit.', misoLimitExceededCount));
   if (unresolvedSeparatorCollisionCount > 0) issues.push(issue('unresolved-separator-collision', 'error', 'A chunk still contains the MISO separator.', unresolvedSeparatorCollisionCount));
-  if (sourceSeparatorCollisionCount > 0) issues.push(issue('source-separator-replaced', 'warning', 'Literal MISO separators in source text were replaced.', sourceSeparatorCollisionCount));
+  if (sourceSeparatorCollisionCount > 0) issues.push(issue('source-separator-replaced', 'warning', '원문에 포함된 MISO 구분자(@@@)를 다른 문자로 바꿨습니다.', sourceSeparatorCollisionCount));
 
   const processedText = serializeMisoChunks(chunks);
   const resultStatus: ResultStatus = issues.some((entry) => entry.severity === 'error')
@@ -224,6 +243,33 @@ function resultFromChunks(
 /** The sole serialization format accepted by MISO. */
 export function serializeMisoChunks(chunks: string[]): string {
   return chunks.join(MISO_JOINER);
+}
+
+/**
+ * Assigns 1-based ordinals to consecutive ordered list items per depth so
+ * renderers can restore real numbering instead of stamping every item "1.".
+ */
+export function orderedListOrdinals(blocks: DocumentBlock[]): Map<string, number> {
+  const ordinals = new Map<string, number>();
+  const counters = new Map<number, number>();
+  for (const block of [...blocks].sort((left, right) => left.order - right.order)) {
+    if (block.kind !== 'list-item') {
+      counters.clear();
+      continue;
+    }
+    const depth = Math.max(0, block.depth ?? 0);
+    for (const key of [...counters.keys()]) {
+      if (key > depth) counters.delete(key);
+    }
+    if (!block.ordered) {
+      counters.delete(depth);
+      continue;
+    }
+    const ordinal = (counters.get(depth) ?? 0) + 1;
+    counters.set(depth, ordinal);
+    ordinals.set(block.id, ordinal);
+  }
+  return ordinals;
 }
 
 /** Applies final delimiter escaping, source tracking, splitting, and safety validation. */

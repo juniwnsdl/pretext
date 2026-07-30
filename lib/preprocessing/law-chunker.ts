@@ -108,6 +108,25 @@ function isImmediateLegalCitationSuffix(value: string): boolean {
   ].some((pattern) => pattern.test(value));
 }
 
+/** True when text after a legal keyword continues a citation ("및 제13조…", "제2항의 규정…"). */
+function isCitationContinuation(value: string): boolean {
+  const trimmed = value.trimStart();
+  if (!trimmed) return false;
+  if (isImmediateLegalCitationSuffix(trimmed)) return true;
+  return /^(?:및|또는|내지|부터|까지)(?:\s|$)/u.test(trimmed) ||
+    /^제\s*\d+\s*[항호]/u.test(trimmed);
+}
+
+function isSentenceLikeText(value: string): boolean {
+  return /(?:다|시오|세요|에요|예요|해요|아요|어요|네요|지요|죠)(?:[.!?。！？])?$/u.test(value.trim());
+}
+
+/** True for table-of-contents tails such as "·········· 12". */
+function isTocLeaderTail(value: string): boolean {
+  const trimmed = value.trim();
+  return /^[·.…‥\-\s]*\d{1,4}$/u.test(trimmed) && /[·…‥]|\.{2,}/u.test(trimmed);
+}
+
 export function parseLegalHeading(line: string): ParsedLegalHeading | null {
   const trimmed = stripMarkdownHeading(line);
   if (!trimmed) return null;
@@ -123,12 +142,22 @@ export function parseLegalHeading(line: string): ParsedLegalHeading | null {
   const titledArticleMatch = value.match(
     /^(제\s*\d+\s*조(?:\s*의\s*\d+)?)\s*(\([^)\n]*\))(.*)$/u,
   );
-  if (titledArticleMatch && isImmediateLegalCitationSuffix(titledArticleMatch[3])) {
+  if (titledArticleMatch && (
+    isImmediateLegalCitationSuffix(titledArticleMatch[3]) ||
+    isCitationContinuation(titledArticleMatch[3]) ||
+    isTocLeaderTail(titledArticleMatch[3])
+  )) {
     return null;
   }
   const untitledArticleMatch = titledArticleMatch
     ? null
     : value.match(/^(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s+(.*))?$/u);
+  if (untitledArticleMatch?.[2] && (
+    isCitationContinuation(untitledArticleMatch[2]) ||
+    isTocLeaderTail(untitledArticleMatch[2])
+  )) {
+    return null;
+  }
   if (titledArticleMatch || untitledArticleMatch) {
     const articleMatch = titledArticleMatch ?? untitledArticleMatch;
     const title = titledArticleMatch?.[2];
@@ -148,9 +177,11 @@ export function parseLegalHeading(line: string): ParsedLegalHeading | null {
 
   const hierarchyMatch = value.match(/^(제\s*\d+\s*(편|장|절|관))(?:\s+(.+))?$/u);
   if (hierarchyMatch) {
-    const title = hierarchyMatch[3]?.trim() ?? '';
-    const sentenceLikeTitle = /(?:다|요|시오|세요)(?:[.!?。！？])?$/u.test(title);
-    if (!hasExplicitMarkdownHeadingSyntax(line) && sentenceLikeTitle) return null;
+    let title = hierarchyMatch[3]?.trim() ?? '';
+    if (isCitationContinuation(title)) return null;
+    if (!hasExplicitMarkdownHeadingSyntax(line) && isSentenceLikeText(title)) return null;
+    const leaderTail = title.match(/^(.*?)\s*(?:[·…‥]|\.{2,})[·.…‥\s]*\d{1,4}$/u);
+    if (leaderTail) title = leaderTail[1].trim();
 
     const kindByUnit: Record<string, HierarchyKind> = {
       편: 'part',
@@ -160,20 +191,35 @@ export function parseLegalHeading(line: string): ParsedLegalHeading | null {
     };
     return {
       kind: kindByUnit[hierarchyMatch[2]],
-      heading: value,
+      heading: title ? `${hierarchyMatch[1]} ${title}` : hierarchyMatch[1],
       inlineBody: '',
       leadingMetadata,
     };
   }
 
-  if (/^부칙(?=\s|$|\()/u.test(value)) {
-    return { kind: 'addendum', heading: value, inlineBody: '', leadingMetadata };
+  const addendumMatch = value.match(/^부\s?칙(?=\s|$|\()/u);
+  if (addendumMatch) {
+    const rest = value.slice(addendumMatch[0].length).trim();
+    if (!isSentenceLikeText(rest) && !isCitationContinuation(rest) && !isTocLeaderTail(rest)) {
+      return { kind: 'addendum', heading: value, inlineBody: '', leadingMetadata };
+    }
   }
-  if (/^별표(?:\s|$|\d)/u.test(value)) {
-    return { kind: 'appendix', heading: value, inlineBody: '', leadingMetadata };
-  }
-  if (/^별지(?:\s|$|\d)/u.test(value)) {
-    return { kind: 'form', heading: value, inlineBody: '', leadingMetadata };
+  const appendixMatch = value.match(/^(별표|별지)(?=\s|$|\d)\s*(?:제\s*)?\d*(?:호|의\s*\d+)?/u);
+  if (appendixMatch) {
+    const rest = value.slice(appendixMatch[0].length).trim();
+    if (
+      !isImmediateLegalCitationSuffix(value.slice(appendixMatch[0].length)) &&
+      !isCitationContinuation(rest) &&
+      !isSentenceLikeText(rest) &&
+      !isTocLeaderTail(rest)
+    ) {
+      return {
+        kind: appendixMatch[1] === '별표' ? 'appendix' : 'form',
+        heading: value,
+        inlineBody: '',
+        leadingMetadata,
+      };
+    }
   }
 
   return null;
@@ -496,6 +542,45 @@ export function chunkLawDocument(document: ExtractedDocument): ChunkingOutput {
     });
   }
 
+  // A heading-only boundary whose location reappears in the next draft's
+  // location adds no content of its own; fold it into that draft instead of
+  // emitting a context-only chunk.
+  for (let index = drafts.length - 2; index >= 0; index -= 1) {
+    const draft = drafts[index];
+    const next = drafts[index + 1];
+    const location = draft.contextLines[1];
+    const nextLocation = next.contextLines[1];
+    if (
+      draft.body.trim().length === 0 &&
+      location !== undefined &&
+      nextLocation !== undefined &&
+      (nextLocation === location || nextLocation.startsWith(`${location} > `))
+    ) {
+      next.sourceBlockIds = [...draft.sourceBlockIds, ...next.sourceBlockIds];
+      drafts.splice(index, 1);
+    }
+  }
+
+  // Table-of-contents entries parse as headings with no body; when the same
+  // heading recurs later with real content, fold the empty draft into it.
+  for (let index = drafts.length - 1; index >= 0; index -= 1) {
+    const draft = drafts[index];
+    if (draft.body.trim().length > 0) continue;
+    const location = draft.contextLines[1]?.replace(/^\[위치\] /u, '');
+    if (location === undefined) continue;
+    const leaf = location.split(' > ').at(-1);
+    const target = drafts.find((candidate, candidateIndex) => {
+      if (candidateIndex <= index || candidate.body.trim().length === 0) return false;
+      const candidateLocation = candidate.contextLines[1]?.replace(/^\[위치\] /u, '');
+      return candidateLocation !== undefined &&
+        (candidateLocation === location || candidateLocation.endsWith(` > ${leaf}`));
+    });
+    if (target) {
+      target.sourceBlockIds = [...draft.sourceBlockIds, ...target.sourceBlockIds];
+      drafts.splice(index, 1);
+    }
+  }
+
   return {
     drafts,
     expectedSourceBlockIds: expectedSourceBlockIds(document),
@@ -706,6 +791,25 @@ export function chunkDelegationManualDocument(
         body: piece.body,
         contextLines: [],
         sourceBlockIds: claimSourceIds(piece.sourceIds, claimedSourceIds),
+        warnings: [],
+      });
+    }
+  }
+
+  // Lines between the manual title and the first category (legend, revision
+  // notes) are content: keep them under the manual title.
+  const introLines = sourcedLines.slice(manualTitleIndex + 1, categoryMarkers[0].lineIndex);
+  if (introLines.some((line) => line.text.trim().length > 0)) {
+    const introLimit = Math.max(1, APP_CHUNK_LIMIT - DELEGATION_MANUAL_TITLE.length - 1);
+    for (const piece of splitSourcedLines(introLines, introLimit)) {
+      if (!piece.body.trim()) continue;
+      drafts.push({
+        body: `${DELEGATION_MANUAL_TITLE}\n${piece.body}`,
+        contextLines: [],
+        sourceBlockIds: claimSourceIds(
+          [sourcedLines[manualTitleIndex].sourceId, ...piece.sourceIds],
+          claimedSourceIds,
+        ),
         warnings: [],
       });
     }

@@ -9,6 +9,14 @@ import {
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './contracts.ts';
 import {
+  APP_CHUNK_LIMIT,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './contracts.ts';
+import {
+  splitTextPreservingSeparators,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './core.ts';
+import {
   chunkTableBlock,
   extractMarkdownTableBlocks,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
@@ -168,20 +176,77 @@ function csvTable(text: string, idPrefix: string): DocumentBlock[] {
   }];
 }
 
-function flatTableSources(document: ExtractedDocument): ExcelTableSource[] {
-  return document.blocks.flatMap((block) => {
+interface ExcelProseSource {
+  kind: 'prose';
+  text: string;
+  sourceBlockId: string;
+  sheetName: string;
+}
+
+interface ExcelFlatSource {
+  kind: 'table';
+  table: ExcelTableSource;
+}
+
+type ExcelFlatSegment = ExcelProseSource | ExcelFlatSource;
+
+function isMarkdownTableLine(line: string): boolean {
+  return /^\s*\|.*\|\s*$/u.test(line);
+}
+
+/** Splits a flat block into ordered prose and table segments so prose survives. */
+function flatSegments(document: ExtractedDocument): ExcelFlatSegment[] {
+  return document.blocks.flatMap((block): ExcelFlatSegment[] => {
     if (block.kind !== 'raw-text' || !block.text?.trim()) return [];
+    const sheetName = block.sheetName || document.fileName;
     const parsedMarkdown = markdownTables(block.text, `${block.id}-markdown`);
-    const parsed = parsedMarkdown.length > 0
-      ? parsedMarkdown
-      : csvTable(block.text, `${block.id}-csv`);
-    return parsed.map((table) => ({
-      sourceBlockId: block.id,
-      block: {
-        ...table,
-        sheetName: block.sheetName || document.fileName,
-      },
-    }));
+    if (parsedMarkdown.length === 0) {
+      const parsed = csvTable(block.text, `${block.id}-csv`);
+      return parsed.map((table) => ({
+        kind: 'table',
+        table: { sourceBlockId: block.id, block: { ...table, sheetName } },
+      }));
+    }
+
+    const segments: ExcelFlatSegment[] = [];
+    let tableNumber = 0;
+    let proseLines: string[] = [];
+    let tableRunLines: string[] = [];
+    const flushProse = (): void => {
+      const text = proseLines.join('\n').trim();
+      proseLines = [];
+      if (text) segments.push({ kind: 'prose', text, sourceBlockId: block.id, sheetName });
+    };
+    const flushTableRun = (): void => {
+      if (tableRunLines.length === 0) return;
+      const [table] = extractMarkdownTableBlocks(
+        tableRunLines.join('\n'),
+        `${block.id}-markdown-run-${tableNumber + 1}`,
+      );
+      if (table) {
+        flushProse();
+        tableNumber += 1;
+        segments.push({
+          kind: 'table',
+          table: { sourceBlockId: block.id, block: { ...table, sheetName } },
+        });
+      } else {
+        proseLines.push(...tableRunLines);
+      }
+      tableRunLines = [];
+    };
+
+    for (const line of block.text.replace(/\r\n?/gu, '\n').split('\n')) {
+      if (isMarkdownTableLine(line)) {
+        tableRunLines.push(line);
+        continue;
+      }
+      flushTableRun();
+      proseLines.push(line);
+    }
+    flushTableRun();
+    flushProse();
+    return segments;
   });
 }
 
@@ -215,23 +280,129 @@ function hasMergeWarningForSheet(
   );
 }
 
+function populatedCellCount(row: string[]): number {
+  return row.filter((cell) => cell.trim().length > 0).length;
+}
+
+/**
+ * Rows above the column header that carry a single populated cell are sheet
+ * or table titles; keep them as context instead of letting one become the
+ * column header for every following chunk.
+ */
+function peelTitleRows(rows: string[][]): { rows: string[][]; headerContext: string[] } {
+  let remaining = rows;
+  const headerContext: string[] = [];
+  while (
+    remaining.length > 1 &&
+    populatedCellCount(remaining[0]) === 1 &&
+    populatedCellCount(remaining[1]) >= 2
+  ) {
+    const title = headerContextLine(remaining[0]);
+    if (title) headerContext.push(title);
+    remaining = remaining.slice(1);
+  }
+  return { rows: remaining, headerContext };
+}
+
+function isDataLikeCell(cell: string): boolean {
+  const value = cell.trim();
+  if (!value) return false;
+  return /^[-+]?[\d,]+(?:\.\d+)?\s*(?:%|℃|°C|㎜|mm|cm|m|kg|t|kW|MW|kV|V|A|Hz|bar|MPa|kPa|시간|분|초|회|명|개|건|호기)?$/u.test(value) ||
+    /^\d{4}[-./년]\s?\d{1,2}(?:[-./월]\s?\d{1,2}일?)?$/u.test(value) ||
+    /^\d{1,2}[:시]\d{2}분?$/u.test(value);
+}
+
+function isDataLikeRow(row: string[]): boolean {
+  return row.some(isDataLikeCell);
+}
+
+/**
+ * A stray blank row inside one table would otherwise promote the next data
+ * row to a column header; when the following region has the same width, no
+ * title of its own, and starts with data-like cells, treat it as a
+ * continuation of the previous table.
+ */
+function mergeContinuationRegions(
+  sections: LayoutSection[],
+  onMerge: () => void,
+): LayoutSection[] {
+  const merged: LayoutSection[] = [];
+  for (const section of sections) {
+    const previous = merged.at(-1);
+    if (
+      previous &&
+      section.headerContext.length === 0 &&
+      previous.rows.length >= 2 &&
+      section.rows.length >= 1 &&
+      section.rows[0].length === previous.rows[0].length &&
+      isDataLikeRow(section.rows[0]) &&
+      !isDataLikeRow(previous.rows[0])
+    ) {
+      previous.rows = [...previous.rows, ...section.rows];
+      onMerge();
+      continue;
+    }
+    merged.push(section);
+  }
+  return merged;
+}
+
 /** Chunks workbook sheets without allowing table regions or sheets to mix. */
 export function chunkWorkbookDocument(document: ExtractedDocument): ChunkingOutput {
   const structured = structuredTableSources(document);
-  const sources = structured.length > 0 ? structured : flatTableSources(document);
+  const segments: ExcelFlatSegment[] = structured.length > 0
+    ? structured.map((table) => ({ kind: 'table', table }))
+    : flatSegments(document);
   const drafts: ChunkDraft[] = [];
   const warnings: PreprocessIssue[] = [...document.warnings];
   const expectedSourceBlockIds: string[] = [];
   const consumedSourceIds = new Set<string>();
   const tableCountsBySheet = new Map<string, number>();
+  const claimSource = (sourceBlockId: string): string[] => {
+    if (consumedSourceIds.has(sourceBlockId)) return [];
+    consumedSourceIds.add(sourceBlockId);
+    expectedSourceBlockIds.push(sourceBlockId);
+    return [sourceBlockId];
+  };
 
-  for (const { block, sourceBlockId } of sources) {
+  for (const segment of segments) {
+    if (segment.kind === 'prose') {
+      const contextLines = [`[파일] ${document.fileName}`, `[시트] ${segment.sheetName}`];
+      const bodyLimit = Math.max(1, APP_CHUNK_LIMIT - contextLines.join('\n').length - 1);
+      for (const body of splitTextPreservingSeparators(segment.text, bodyLimit)) {
+        drafts.push({
+          body,
+          contextLines,
+          sourceBlockIds: claimSource(segment.sourceBlockId),
+          warnings: [],
+        });
+      }
+      continue;
+    }
+
+    const { block, sourceBlockId } = segment.table;
     const sheetName = block.sheetName || document.fileName;
     const detectedSections = layoutSections(block);
-    const regions: LayoutSection[] = detectedSections ?? splitTableRegions(block.rows ?? []).map((region) => ({
-      rows: region.rows,
-      headerContext: [],
-    }));
+    let continuationMergeCount = 0;
+    const regions: LayoutSection[] = detectedSections ?? mergeContinuationRegions(
+      splitTableRegions(block.rows ?? []).map((region) => {
+        const peeled = peelTitleRows(region.rows);
+        return {
+          rows: peeled.rows,
+          headerContext: peeled.headerContext,
+        };
+      }),
+      () => { continuationMergeCount += 1; },
+    );
+    if (continuationMergeCount > 0) {
+      warnings.push({
+        code: 'TABLE_CONTINUATION_MERGED',
+        severity: 'warning',
+        message: `Data rows after a blank row in sheet "${sheetName}" were merged into the preceding table.`,
+        count: continuationMergeCount,
+        locations: [`${sheetName}:${sourceBlockId}`],
+      });
+    }
     const mergesAlreadyWarned = hasMergeWarningForSheet(document.warnings, sheetName);
     if (!detectedSections && regions.length > 1) {
       warnings.push(warningForMultipleTables(sheetName, sourceBlockId, regions.length));

@@ -226,6 +226,7 @@ function conversionWarnings(messages: MammothMessage[] | undefined): PreprocessI
   return (messages ?? [])
     .map((message) => message.message?.trim() ?? '')
     .filter(Boolean)
+    .filter((message) => !/^Unrecognised paragraph style:/iu.test(message))
     .map((message) => ({
       code: 'DOCX_CONVERSION_WARNING',
       severity: 'warning' as const,

@@ -78,7 +78,7 @@ function contextPrefixLength(contextLines: string[]): number {
 }
 
 function fragmentLinePrefix(columnIndex: number, header: string[]): string {
-  const label = header[columnIndex]?.trim() || `column ${columnIndex + 1}`;
+  const label = header[columnIndex]?.trim() || `열 ${columnIndex + 1}`;
   return `행 분할: ${escapeMarkdownCell(label)}: `;
 }
 
@@ -91,25 +91,34 @@ function splitOversizedCell(value: string, availableLength: number): string[] {
     .map(escapeMarkdownCell);
 }
 
-function renderRowFragments(row: IndexedRow, header: string[], bodyLimit: number): string[] {
+interface RowFragments {
+  identifierLine: string;
+  fragments: string[];
+}
+
+function renderRowFragments(row: IndexedRow, header: string[], bodyLimit: number): RowFragments {
   const fragments: string[] = [];
   const identifierIndex = row.cells.findIndex((cell) => cell.trim().length > 0);
   const identifierLine = identifierIndex >= 0
     ? `행 분할: ${escapeMarkdownCell(row.cells[identifierIndex])}`
     : '';
-  const useIdentifier = identifierIndex >= 0 && identifierLine.length <= bodyLimit;
-  if (useIdentifier) {
-    fragments.push(identifierLine);
-  }
+  const useIdentifier = identifierIndex >= 0 && identifierLine.length + 2 <= bodyLimit;
+  const fragmentLimit = useIdentifier
+    ? Math.max(1, bodyLimit - identifierLine.length - 1)
+    : bodyLimit;
   row.cells.forEach((cell, columnIndex) => {
     if (useIdentifier && columnIndex === identifierIndex) return;
+    if (cell.trim().length === 0) return;
     const prefix = fragmentLinePrefix(columnIndex, header);
-    const valueLimit = Math.max(1, bodyLimit - prefix.length);
+    const valueLimit = Math.max(1, fragmentLimit - prefix.length);
     for (const valueFragment of splitOversizedCell(cell, valueLimit)) {
       fragments.push(`${prefix}${valueFragment}`);
     }
   });
-  return fragments.length > 0 ? fragments : ['행 분할'];
+  if (fragments.length === 0) {
+    return { identifierLine: '', fragments: [identifierLine || '행 분할'] };
+  }
+  return { identifierLine: useIdentifier ? identifierLine : '', fragments };
 }
 
 /**
@@ -210,17 +219,30 @@ export function chunkTableBlock(block: DocumentBlock, contextLines: string[]): C
       }
 
       flush();
-      for (const fragment of renderRowFragments(row, header, Math.max(1, bodyLimit - 1))) {
-        if (fragment.length + 1 > bodyLimit) {
+      // The row identifier frames every chunk of the row, like the header,
+      // so each fragment chunk stays attributable on its own.
+      const rowFragments = renderRowFragments(row, header, Math.max(1, bodyLimit - 1));
+      const fragmentBase = rowFragments.identifierLine
+        ? `${tableStart}\n${rowFragments.identifierLine}`
+        : tableStart;
+      let fragmentBody = fragmentBase;
+      let fragmentHasData = false;
+      const flushFragments = (): void => {
+        if (fragmentHasData) pushDraft(fragmentBody);
+        fragmentBody = fragmentBase;
+        fragmentHasData = false;
+      };
+      for (const fragment of rowFragments.fragments) {
+        if (fragmentBase.length + fragment.length + 1 > APP_CHUNK_LIMIT - contextLength) {
           return blockedOutput('Context and the complete repeated table header leave insufficient space for a table row fragment.');
         }
-        if (body.length + fragment.length + 1 > APP_CHUNK_LIMIT - contextLength && hasData) {
-          flush();
+        if (fragmentBody.length + fragment.length + 1 > APP_CHUNK_LIMIT - contextLength) {
+          flushFragments();
         }
-        body += `\n${fragment}`;
-        hasData = true;
-        flush();
+        fragmentBody += `\n${fragment}`;
+        fragmentHasData = true;
       }
+      flushFragments();
     }
     flush();
   }

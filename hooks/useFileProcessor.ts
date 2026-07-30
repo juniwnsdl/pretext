@@ -97,12 +97,6 @@ interface LawContentApiResponse {
   error?: string | { message?: unknown };
 }
 
-const STRUCTURE_DISCARDED_ISSUE: PreprocessIssue = {
-  code: 'STRUCTURE_DISCARDED_AFTER_EDIT',
-  severity: 'warning',
-  message: 'Manual editing replaced the extracted structure with raw text.',
-};
-
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : String(error || fallback);
 }
@@ -410,10 +404,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
   const setInputText = useCallback((text: string) => {
     cancelPendingWork();
     const currentDocument = sourceDocumentRef.current;
-    const warnings = uniqueIssues([
-      ...(currentDocument?.warnings ?? []),
-      STRUCTURE_DISCARDED_ISSUE,
-    ]);
+    const warnings = uniqueIssues(currentDocument?.warnings ?? []);
     const editedDocument = rawTextDocument(
       currentDocument?.fileName ?? file?.name ?? 'document.txt',
       currentDocument?.sourceFormat ?? (getFileExtension(file?.name ?? '') || 'txt'),
@@ -645,10 +636,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     const originalLength = result?.stats.originalLength
       ?? documentSourceLength(sourceDocumentRef.current, inputText.length);
     const validated = revalidateEditedChunks(newChunks, originalLength);
-    const updatedResult = mergeResultIssues(validated, [
-      ...extractionIssues,
-      STRUCTURE_DISCARDED_ISSUE,
-    ]);
+    const updatedResult = mergeResultIssues(validated, extractionIssues);
     setResult(updatedResult);
     setProcessedText(updatedResult.processedText);
     setProcessedChunks(updatedResult.chunks);
