@@ -4,7 +4,7 @@
 
 **Goal:** Combine the duplicated document-type and automatic-rule help sections, update all four type descriptions from the current preprocessing behavior, and keep the setup-screen summaries concise.
 
-**Architecture:** Keep help navigation metadata in `lib/help-guide-layout.ts`, detailed copy and presentation in `components/usage-guide.tsx`, and short selection copy in `app/page.tsx`. Replace the two old help section IDs with one `document-rules` ID, render common rules and type-specific rules in one card, and protect the static user-facing contract with Node source tests.
+**Architecture:** Keep help navigation metadata in `lib/help-guide-layout.ts`, detailed copy and presentation in `components/usage-guide.tsx`, and short selection copy in `app/page.tsx`. Replace the two old help section IDs with one `document-rules` ID, protect that layout contract with a Node test, and verify human-facing copy through type checking and rendered UI inspection rather than brittle source-string tests.
 
 **Tech Stack:** Next.js 16, React 19, TypeScript, Tailwind CSS, Node test runner
 
@@ -97,66 +97,13 @@ Expected: 2 tests pass.
 ### Task 2: Build the combined detailed help section
 
 **Files:**
-- Create: `lib/usage-guide-content.test.mjs`
 - Modify: `components/usage-guide.tsx`
 
 **Interfaces:**
 - Consumes: `HelpSectionId` member `'document-rules'`
 - Produces: `DocumentRulesGuide()` with common rules and four `documentTypes` entries shaped as `{ name, selection, rules }`
 
-- [ ] **Step 1: Add a source-contract test for the combined help copy**
-
-Create `lib/usage-guide-content.test.mjs`:
-
-```js
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
-const guideSource = readFileSync(
-  fileURLToPath(new URL('../components/usage-guide.tsx', import.meta.url)),
-  'utf8',
-);
-const pageSource = readFileSync(
-  fileURLToPath(new URL('../app/page.tsx', import.meta.url)),
-  'utf8',
-);
-
-test('usage help combines common and type-specific document rules', () => {
-  assert.match(guideSource, /function DocumentRulesGuide\(\)/u);
-  assert.match(guideSource, /문서 종류별 정리 기준/u);
-  assert.match(guideSource, /모든 문서에 공통으로 적용/u);
-  assert.match(guideSource, /반복되는 짧은 머리말·꼬리말/u);
-  assert.match(guideSource, /원문의 @@@/u);
-  assert.match(guideSource, /부칙·별표·별지/u);
-  assert.match(guideSource, /머리행 범위를 직접 수정/u);
-  assert.match(guideSource, /주의·안전 문구/u);
-  assert.match(guideSource, /구조화된 DOCX 계약서/u);
-  assert.match(guideSource, /\[위임전결규정 매뉴얼\]/u);
-  assert.doesNotMatch(guideSource, /문서 종류 선택 기준/u);
-  assert.doesNotMatch(guideSource, /자동 정리 기준/u);
-});
-
-test('preprocessing setup keeps one concise current summary per document type', () => {
-  assert.match(pageSource, /편·장·절·관·조와 부칙·별표·별지의 위치 문맥을 유지합니다/u);
-  assert.match(pageSource, /시트와 머리행을 감지해 표 영역별로 나누며 머리행을 직접 수정할 수 있습니다/u);
-  assert.match(pageSource, /소제목·작업 단계와 주의·안전 문구가 떨어지지 않게 나눕니다/u);
-  assert.match(pageSource, /제목·문단·목록·표를 기준으로 나누고 구조화된 계약서 조문도 인식합니다/u);
-});
-```
-
-- [ ] **Step 2: Run the new test and confirm both current-copy assertions fail**
-
-Run:
-
-```powershell
-node --test lib/usage-guide-content.test.mjs
-```
-
-Expected: 2 failing tests because neither the combined help nor the concise current summaries exist yet.
-
-- [ ] **Step 3: Expand the help data into explicit selection and rule fields**
+- [ ] **Step 1: Expand the help data into explicit selection and rule fields**
 
 Keep the four existing names and replace their descriptions with data equivalent to:
 
@@ -193,7 +140,7 @@ const documentTypes = [
 ];
 ```
 
-- [ ] **Step 4: Replace the two old components with one combined card**
+- [ ] **Step 2: Replace the two old components with one combined card**
 
 Implement this structure, following the existing card and grid styles:
 
@@ -250,11 +197,15 @@ case 'document-rules':
 
 Delete `DocumentTypesGuide`, `AutomaticRulesGuide`, and their two switch cases.
 
-- [ ] **Step 5: Run the new test and confirm the detailed-help test passes**
+- [ ] **Step 3: Type-check the combined help component**
 
-Run the command from Step 2.
+Run:
 
-Expected: the first test passes; the setup-summary test still fails.
+```powershell
+pnpm exec tsc --noEmit
+```
+
+Expected: exit code 0 with the new `document-rules` switch branch and data fields accepted.
 
 ---
 
@@ -262,7 +213,6 @@ Expected: the first test passes; the setup-summary test still fails.
 
 **Files:**
 - Modify: `app/page.tsx`
-- Test: `lib/usage-guide-content.test.mjs`
 
 **Interfaces:**
 - Consumes: existing `RadioGroup` values `law`, `excel`, `manual`, and `general`
@@ -290,15 +240,15 @@ Use exactly:
 
 Do not change radio IDs, values, or labels.
 
-- [ ] **Step 2: Run the complete new content test**
+- [ ] **Step 2: Type-check the concise summaries in context**
 
 Run:
 
 ```powershell
-node --test lib/usage-guide-content.test.mjs
+pnpm exec tsc --noEmit
 ```
 
-Expected: 2 tests pass.
+Expected: exit code 0; the radio IDs, values, and component structure remain valid.
 
 ---
 
@@ -306,7 +256,6 @@ Expected: 2 tests pass.
 
 **Files:**
 - Verify: `lib/help-guide-layout.test.mjs`
-- Verify: `lib/usage-guide-content.test.mjs`
 - Verify: `components/usage-guide.tsx`
 - Verify: `app/page.tsx`
 
@@ -317,10 +266,10 @@ Expected: 2 tests pass.
 - [ ] **Step 1: Run the focused tests together**
 
 ```powershell
-node --no-warnings --experimental-strip-types --test lib/help-guide-layout.test.mjs lib/usage-guide-content.test.mjs
+node --no-warnings --experimental-strip-types --test lib/help-guide-layout.test.mjs
 ```
 
-Expected: 4 tests pass.
+Expected: 2 tests pass.
 
 - [ ] **Step 2: Run the complete Node test suite**
 
@@ -351,8 +300,7 @@ Run the local development server and confirm:
 
 ```powershell
 git diff --check
-git diff -- lib/help-guide-layout.ts lib/help-guide-layout.test.mjs lib/usage-guide-content.test.mjs components/usage-guide.tsx app/page.tsx
+git diff -- lib/help-guide-layout.ts lib/help-guide-layout.test.mjs components/usage-guide.tsx app/page.tsx
 ```
 
 Expected: no whitespace errors; only the intended help/layout/copy changes are present in the task portions of the diff.
-
