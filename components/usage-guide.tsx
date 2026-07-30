@@ -25,6 +25,8 @@ import {
   DOCUMENT_HANDLING_STAGES,
 } from '@/lib/document-handling-guide';
 import {
+  getFileProcessingDisclosure,
+  LOCAL_DOCX_EXTENSIONS,
   LOCAL_EXCEL_EXTENSIONS,
   LOCAL_TEXT_EXTENSIONS,
   MAX_FILE_SIZE_BYTES,
@@ -86,26 +88,27 @@ const fileRoutes = [
   {
     category: '텍스트·데이터',
     extensions: LOCAL_TEXT_EXTENSIONS,
-    route: '브라우저에서 바로 읽음',
-    sentToMiso: false,
+    disclosure: getFileProcessingDisclosure('local-text'),
   },
   {
     category: '엑셀',
     extensions: LOCAL_EXCEL_EXTENSIONS,
-    route: '브라우저에서 변환',
-    sentToMiso: false,
+    disclosure: getFileProcessingDisclosure('local-excel'),
+  },
+  {
+    category: 'DOCX',
+    extensions: LOCAL_DOCX_EXTENSIONS,
+    disclosure: getFileProcessingDisclosure('local-docx'),
   },
   {
     category: '문서',
     extensions: MISO_DOCUMENT_EXTENSIONS,
-    route: 'MISO로 텍스트 추출',
-    sentToMiso: true,
+    disclosure: getFileProcessingDisclosure('miso'),
   },
   {
     category: '이미지',
     extensions: MISO_IMAGE_EXTENSIONS,
-    route: 'MISO로 텍스트 추출',
-    sentToMiso: true,
+    disclosure: getFileProcessingDisclosure('miso'),
   },
 ];
 
@@ -278,10 +281,10 @@ function FileRoutingGuide() {
                 <tr key={item.category} className="border-t align-top">
                   <td className="px-4 py-3 font-medium">{item.category}</td>
                   <td className="px-4 py-3"><ExtensionList extensions={item.extensions} /></td>
-                  <td className="px-4 py-3 text-muted-foreground">{item.route}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{item.disclosure.extractionLabel}</td>
                   <td className="px-4 py-3">
-                    <Badge variant={item.sentToMiso ? 'default' : 'outline'}>
-                      {item.sentToMiso ? '전송함' : '전송 안 함'}
+                    <Badge variant={item.disclosure.transmission === 'never' ? 'outline' : 'default'}>
+                      {item.disclosure.transmissionLabel}
                     </Badge>
                   </td>
                 </tr>

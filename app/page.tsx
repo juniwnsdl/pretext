@@ -47,7 +47,11 @@ import { ProgressStepper } from '@/components/progress-stepper';
 import { UsageGuide } from '@/components/usage-guide';
 
 import { useFileProcessor } from '@/hooks/useFileProcessor';
-import { FILE_INPUT_ACCEPT } from '@/lib/file-processing-policy';
+import {
+  FILE_INPUT_ACCEPT,
+  getFileProcessingDisclosure,
+  getFileProcessingRoute,
+} from '@/lib/file-processing-policy';
 import {
   APP_CHUNK_LIMIT,
   MISO_CHUNK_LIMIT,
@@ -139,6 +143,9 @@ export default function Home() {
   // 상태 변경 감지를 위한 ref
   const prevStatusRef = useRef(status);
   const prevErrorRef = useRef(error);
+  const selectedFileDisclosure = file
+    ? getFileProcessingDisclosure(getFileProcessingRoute(file.name))
+    : null;
 
   // 에러 발생 시 Toast 알림
   useEffect(() => {
@@ -470,6 +477,20 @@ export default function Home() {
                       </div>
                     </div>
                   )}
+                  {selectedFileDisclosure && (
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-foreground">{selectedFileDisclosure.title}</span>
+                          <Badge variant={selectedFileDisclosure.transmission === 'never' ? 'outline' : 'default'}>
+                            {selectedFileDisclosure.transmissionLabel}
+                          </Badge>
+                        </div>
+                        <p className="leading-6">{selectedFileDisclosure.message}</p>
+                      </AlertDescription>
+                    </Alert>
+                  )}
                 </div>
 
                 <Button 
@@ -484,7 +505,9 @@ export default function Home() {
                       파일 처리 중...
                     </>
                   ) : (
-                    '파일 처리하기'
+                    selectedFileDisclosure
+                      ? selectedFileDisclosure.buttonLabel
+                      : '파일 처리하기'
                   )}
                 </Button>
 

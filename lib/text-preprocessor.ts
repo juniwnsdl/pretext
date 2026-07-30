@@ -62,25 +62,37 @@ export function preprocessExtractedDocument(
   document: ExtractedDocument,
   docType: DocType,
 ): PreprocessResult {
+  const originalLength = documentSourceLength(document);
+  const preparationWarnings: ExtractedDocument['warnings'] = [];
+  const preparedDocument: ExtractedDocument = {
+    ...document,
+    blocks: document.blocks.map((block) => {
+      if (block.kind !== 'raw-text' || block.text === undefined) return block;
+      const prepared = prepareSourceText(block.text);
+      preparationWarnings.push(...prepared.warnings);
+      return { ...block, text: prepared.text };
+    }),
+    warnings: [...document.warnings, ...preparationWarnings],
+  };
   const compatibilityOutput = docType === 'excel'
     ? null
-    : chunkDelegationManualDocument(document);
+    : chunkDelegationManualDocument(preparedDocument);
   const output = compatibilityOutput ?? (() => {
     switch (docType) {
       case 'law':
-        return chunkLawDocument(document);
+        return chunkLawDocument(preparedDocument);
       case 'manual':
-        return chunkManualDocument(document);
+        return chunkManualDocument(preparedDocument);
       case 'excel':
-        return chunkWorkbookDocument(document);
+        return chunkWorkbookDocument(preparedDocument);
       case 'general':
       default:
-        return chunkGeneralDocument(document);
+        return chunkGeneralDocument(preparedDocument);
     }
   })();
 
   return finalizeChunkDrafts({
-    originalLength: documentSourceLength(document),
+    originalLength,
     ...output,
   });
 }
@@ -105,7 +117,6 @@ export function preprocessByDocType(
   options: PreprocessOptions | string = {},
 ): PreprocessResult {
   validateLegacySeparator(options);
-  const prepared = prepareSourceText(text);
   const document: ExtractedDocument = {
     version: 1,
     fileName: documentNameFromOptions(options),
@@ -116,18 +127,11 @@ export function preprocessByDocType(
       kind: 'raw-text',
       order: 0,
       headingPath: [],
-      text: prepared.text,
+      text,
     }],
-    warnings: prepared.warnings,
+    warnings: [],
   };
-  const result = preprocessExtractedDocument(document, normalizeDocType(docType));
-  return {
-    ...result,
-    stats: {
-      ...result.stats,
-      originalLength: text.length,
-    },
-  };
+  return preprocessExtractedDocument(document, normalizeDocType(docType));
 }
 
 /** Legacy general-document entry point retained for existing callers. */

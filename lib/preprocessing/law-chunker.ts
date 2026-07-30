@@ -109,20 +109,25 @@ export function parseLegalHeading(line: string): ParsedLegalHeading | null {
     ? trimmed.slice(metadataMatch?.[1].length ?? 0).trim()
     : trimmed;
 
-  const articleMatch = value.match(
-    /^(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s*(\([^)\n]*\)))?(?:\s+(.*))?$/u,
+  const titledArticleMatch = value.match(
+    /^(제\s*\d+\s*조(?:\s*의\s*\d+)?)\s*(\([^)\n]*\))(.*)$/u,
   );
-  if (articleMatch) {
-    const titleIndex = articleMatch[2]
-      ? value.indexOf(articleMatch[2], articleMatch[1].length)
+  const untitledArticleMatch = titledArticleMatch
+    ? null
+    : value.match(/^(제\s*\d+\s*조(?:\s*의\s*\d+)?)(?:\s+(.*))?$/u);
+  if (titledArticleMatch || untitledArticleMatch) {
+    const articleMatch = titledArticleMatch ?? untitledArticleMatch;
+    const title = titledArticleMatch?.[2];
+    const titleIndex = title
+      ? value.indexOf(title, articleMatch?.[1].length ?? 0)
       : -1;
-    const heading = articleMatch[2]
-      ? value.slice(0, titleIndex + articleMatch[2].length).trim()
-      : articleMatch[1].trim();
+    const heading = title
+      ? value.slice(0, titleIndex + title.length).trim()
+      : articleMatch?.[1].trim() ?? '';
     return {
       kind: 'article',
       heading,
-      inlineBody: articleMatch[3]?.trim() ?? '',
+      inlineBody: (titledArticleMatch?.[3] ?? untitledArticleMatch?.[2] ?? '').trim(),
       leadingMetadata,
     };
   }

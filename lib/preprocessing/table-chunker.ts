@@ -94,11 +94,15 @@ function splitOversizedCell(value: string, availableLength: number): string[] {
 function renderRowFragments(row: IndexedRow, header: string[], bodyLimit: number): string[] {
   const fragments: string[] = [];
   const identifierIndex = row.cells.findIndex((cell) => cell.trim().length > 0);
-  if (identifierIndex >= 0) {
-    fragments.push(`행 분할: ${escapeMarkdownCell(row.cells[identifierIndex])}`);
+  const identifierLine = identifierIndex >= 0
+    ? `행 분할: ${escapeMarkdownCell(row.cells[identifierIndex])}`
+    : '';
+  const useIdentifier = identifierIndex >= 0 && identifierLine.length <= bodyLimit;
+  if (useIdentifier) {
+    fragments.push(identifierLine);
   }
   row.cells.forEach((cell, columnIndex) => {
-    if (columnIndex === identifierIndex) return;
+    if (useIdentifier && columnIndex === identifierIndex) return;
     const prefix = fragmentLinePrefix(columnIndex, header);
     const valueLimit = Math.max(1, bodyLimit - prefix.length);
     for (const valueFragment of splitOversizedCell(cell, valueLimit)) {

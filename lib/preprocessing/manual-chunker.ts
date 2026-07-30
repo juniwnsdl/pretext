@@ -203,6 +203,19 @@ function appendRawLine(section: ManualSection, line: string, sourceId: string): 
   appendPendingSafetyToInstruction(section, line, sourceId, 'instruction');
 }
 
+function renderStructuredListItem(block: DocumentBlock): string {
+  const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
+  const depth = Math.max(0, block.depth ?? 0);
+  const indentation = '  '.repeat(depth);
+  const marker = block.ordered ? '1. ' : '- ';
+  const firstLine = lines[0].replace(/^\s*(?:[-*+•◦]|\d+[.)])\s+/u, '');
+  const continuationIndentation = `${indentation}   `;
+  return [
+    `${indentation}${marker}${firstLine}`,
+    ...lines.slice(1).map((line) => `${continuationIndentation}${line}`),
+  ].join('\n');
+}
+
 function createSection(path: string[], headingSourceIds: string[] = []): ManualSection {
   return { path, headingSourceIds, units: [], pendingSafety: [], warnings: [] };
 }
@@ -239,14 +252,31 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
       continue;
     }
 
-    if (block.kind !== 'raw-text') {
+    if (block.kind === 'paragraph') {
       if (block.headingPath.length > 0) ensurePath(block.headingPath);
-      const text = block.text ?? '';
-      if (text) {
-        appendPendingSafetyToInstruction(current, text, block.id, 'instruction');
+      for (const line of (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n')) {
+        appendRawLine(current, line, block.id);
       }
       continue;
     }
+
+    if (block.kind === 'list-item') {
+      if (block.headingPath.length > 0) ensurePath(block.headingPath);
+      const text = block.text ?? '';
+      if (safetyLabel.test(text.trim())) {
+        appendRawLine(current, text, block.id);
+      } else if (text) {
+        appendPendingSafetyToInstruction(
+          current,
+          renderStructuredListItem(block),
+          block.id,
+          'step',
+        );
+      }
+      continue;
+    }
+
+    if (block.kind !== 'raw-text') continue;
 
     const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
     for (let index = 0; index < lines.length; index += 1) {
