@@ -180,7 +180,7 @@ function DocumentRulesGuide() {
         </div>
 
         <p className="rounded-lg bg-primary/10 px-4 py-3 text-sm leading-6">
-          <strong>[위임전결규정 매뉴얼]</strong>과 A~J 항목 구조가 확인되면 선택한 종류와 관계없이 전용 기준으로 정리합니다.
+          <strong>[위임전결규정 매뉴얼]</strong>과 A~J 항목 구조가 확인되면 엑셀·내부 데이터 외 유형에서 전용 기준을 우선 적용합니다.
         </p>
       </CardContent>
     </Card>
@@ -240,7 +240,17 @@ Use exactly:
 
 Do not change radio IDs, values, or labels.
 
-- [ ] **Step 2: Type-check the concise summaries in context**
+- [ ] **Step 2: Keep the selection cards readable at narrow widths**
+
+Change only the `RadioGroup` grid breakpoint:
+
+```tsx
+className="grid gap-4 sm:grid-cols-2"
+```
+
+Expected: one column below `sm`, with the existing two-column layout retained at `sm` and wider.
+
+- [ ] **Step 3: Type-check the concise summaries in context**
 
 Run:
 
