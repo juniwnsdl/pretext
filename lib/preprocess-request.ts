@@ -209,6 +209,38 @@ function validMerge(value: unknown): boolean {
     && validPosition(value.end);
 }
 
+function validExcelRowRange(value: unknown): value is { startRow: number; endRow: number } {
+  return isRecord(value)
+    && Number.isInteger(value.startRow)
+    && Number(value.startRow) >= 1
+    && Number.isInteger(value.endRow)
+    && Number(value.endRow) >= Number(value.startRow);
+}
+
+function validExcelHeaderRows(value: unknown): value is {
+  startRow: number;
+  endRow: number;
+  source: 'print-titles' | 'detected' | 'manual';
+} {
+  if (!isRecord(value)) return false;
+  return Number.isInteger(value.startRow)
+    && Number(value.startRow) >= 1
+    && Number.isInteger(value.endRow)
+    && Number(value.endRow) >= Number(value.startRow)
+    && (value.source === 'print-titles'
+      || value.source === 'detected'
+      || value.source === 'manual');
+}
+
+function validExcelLayout(value: unknown): boolean {
+  if (!isRecord(value) || !validExcelRowRange(value.usedRange) || !validExcelHeaderRows(value.headerRows)) {
+    return false;
+  }
+  const headerRows = value.headerRows;
+  return Number(headerRows.startRow) >= value.usedRange.startRow
+    && Number(headerRows.endRow) <= value.usedRange.endRow;
+}
+
 function validBlock(value: unknown): value is DocumentBlock {
   if (!isRecord(value)) return false;
   if (typeof value.id !== 'string' || value.id.length === 0) return false;
@@ -240,6 +272,9 @@ function validBlock(value: unknown): value is DocumentBlock {
   if (hasOwn(value, 'ordered') && typeof value.ordered !== 'boolean') return false;
   if (hasOwn(value, 'sheetName') && typeof value.sheetName !== 'string') return false;
   if (hasOwn(value, 'tableId') && typeof value.tableId !== 'string') return false;
+  if (hasOwn(value, 'excelLayout') && (value.kind !== 'table' || !validExcelLayout(value.excelLayout))) {
+    return false;
+  }
   return !hasOwn(value, 'merges')
     || (Array.isArray(value.merges) && value.merges.every(validMerge));
 }
@@ -256,6 +291,12 @@ function cloneBlock(block: DocumentBlock): DocumentBlock {
     ...block,
     headingPath: [...block.headingPath],
     ...(block.rows ? { rows: block.rows.map((row) => [...row]) } : {}),
+    ...(block.excelLayout ? {
+      excelLayout: {
+        usedRange: { ...block.excelLayout.usedRange },
+        headerRows: { ...block.excelLayout.headerRows },
+      },
+    } : {}),
     ...(block.merges ? {
       merges: block.merges.map((merge) => ({
         ...merge,

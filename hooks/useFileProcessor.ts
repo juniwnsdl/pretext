@@ -21,6 +21,10 @@ import {
   decodeTextBuffer,
   type DecodedText,
 } from '@/lib/text-file-decoder';
+import {
+  applyManualExcelHeaderRows,
+  type ExcelHeaderRowUpdate,
+} from '@/lib/excel-layout-settings';
 import type { DocType } from '@/lib/text-preprocessor';
 
 export type ProcessStats = PreprocessResult['stats'];
@@ -58,6 +62,7 @@ export interface UseFileProcessorReturn {
 
   handleFileRead: (file: File) => Promise<void>;
   processText: () => Promise<void>;
+  reprocessExcel: (updates: ExcelHeaderRowUpdate[]) => Promise<void>;
   redecodeText: (encoding: 'utf-8' | 'euc-kr') => Promise<void>;
 }
 
@@ -515,13 +520,10 @@ export function useFileProcessor(): UseFileProcessorReturn {
     }
   }, [applyExtraction, cancelPendingWork]);
 
-  const processText = useCallback(async () => {
-    const document = sourceDocumentRef.current;
-    if (!document || !inputText.trim()) {
-      setError('There is no document content to preprocess.');
-      return;
-    }
-
+  const runPreprocess = useCallback(async (
+    document: ExtractedDocument,
+    nextDocType: DocType,
+  ): Promise<void> => {
     invalidatePreprocessing();
     const operationId = processOperationRef.current;
     const controller = new AbortController();
@@ -535,7 +537,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           document,
-          docType,
+          docType: nextDocType,
           separator: MISO_SEPARATOR,
         }),
         signal: controller.signal,
@@ -559,7 +561,33 @@ export function useFileProcessor(): UseFileProcessorReturn {
     } finally {
       if (processAbortRef.current === controller) processAbortRef.current = null;
     }
-  }, [docType, extractionIssues, inputText, invalidatePreprocessing]);
+  }, [extractionIssues, invalidatePreprocessing]);
+
+  const processText = useCallback(async () => {
+    const document = sourceDocumentRef.current;
+    if (!document || !inputText.trim()) {
+      setError('There is no document content to preprocess.');
+      return;
+    }
+    await runPreprocess(document, docType);
+  }, [docType, inputText, runPreprocess]);
+
+  const reprocessExcel = useCallback(async (updates: ExcelHeaderRowUpdate[]) => {
+    const document = sourceDocumentRef.current;
+    if (!document) {
+      setError('There is no Excel workbook to reprocess.');
+      return;
+    }
+    try {
+      const updated = applyManualExcelHeaderRows(document, updates);
+      sourceDocumentRef.current = updated;
+      setSourceDocument(updated);
+      await runPreprocess(updated, 'excel');
+    } catch (caught) {
+      setError(errorMessage(caught, 'Excel header settings are invalid.'));
+      setStatus('error');
+    }
+  }, [runPreprocess]);
 
   const updateChunks = useCallback((newChunks: string[]) => {
     invalidatePreprocessing();
@@ -602,6 +630,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     reset,
     handleFileRead,
     processText,
+    reprocessExcel,
     redecodeText,
   };
 }

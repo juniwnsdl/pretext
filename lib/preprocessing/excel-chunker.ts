@@ -25,6 +25,12 @@ interface ExcelTableSource {
   sourceBlockId: string;
 }
 
+interface LayoutSection {
+  rows: string[][];
+  headerContext: string[];
+  itemLabel?: string;
+}
+
 function isFullyEmptyRow(row: string[]): boolean {
   return row.every((cell) => cell.trim().length === 0);
 }
@@ -52,6 +58,88 @@ function splitTableRegions(rows: string[][]): TableRegion[] {
   });
   consume(rows.length - 1);
   return regions;
+}
+
+function itemSectionLabel(row: string[]): string | null {
+  const populated = row.map((cell) => cell.trim()).filter(Boolean);
+  if (populated.length !== 1) return null;
+  const match = /^(?:item|항목)\s*[:：]\s*(.+)$/iu.exec(populated[0]);
+  return match?.[1]?.trim() || null;
+}
+
+function headerContextLine(row: string[]): string | null {
+  const populated = row.map((cell) => cell.trim()).filter(Boolean);
+  return populated.length > 0 ? populated.join(' | ') : null;
+}
+
+function layoutSections(block: DocumentBlock): LayoutSection[] | null {
+  const layout = block.excelLayout;
+  const rows = block.rows ?? [];
+  if (!layout || rows.length === 0) return null;
+
+  const headerStart = layout.headerRows.startRow - layout.usedRange.startRow;
+  const headerEnd = layout.headerRows.endRow - layout.usedRange.startRow;
+  if (
+    headerStart < 0
+    || headerEnd < headerStart
+    || headerStart >= rows.length
+    || headerEnd >= rows.length
+  ) {
+    return null;
+  }
+
+  const headerCandidates = rows
+    .slice(headerStart, headerEnd + 1)
+    .map((row, index) => ({
+      absoluteIndex: headerStart + index,
+      row,
+      populatedCells: row.filter((cell) => cell.trim().length > 0).length,
+    }))
+    .filter((candidate) => candidate.populatedCells > 0)
+    .sort((left, right) =>
+      right.populatedCells - left.populatedCells
+        || right.absoluteIndex - left.absoluteIndex,
+    );
+  const columnHeader = headerCandidates[0];
+  if (!columnHeader) return null;
+
+  const headerContext = rows
+    .slice(0, headerEnd + 1)
+    .filter((_, index) => index !== columnHeader.absoluteIndex)
+    .map(headerContextLine)
+    .filter((line): line is string => line !== null);
+  const sections: LayoutSection[] = [];
+  let itemLabel: string | undefined;
+  let dataRows: string[][] = [];
+  const consume = (): void => {
+    if (dataRows.length > 0) {
+      sections.push({
+        rows: [columnHeader.row, ...dataRows],
+        headerContext,
+        ...(itemLabel ? { itemLabel } : {}),
+      });
+    }
+    dataRows = [];
+  };
+
+  for (const row of rows.slice(headerEnd + 1)) {
+    if (isFullyEmptyRow(row)) {
+      consume();
+      continue;
+    }
+    const nextItemLabel = itemSectionLabel(row);
+    if (nextItemLabel) {
+      consume();
+      itemLabel = nextItemLabel;
+      continue;
+    }
+    dataRows.push(row);
+  }
+  consume();
+
+  return sections.length > 0
+    ? sections
+    : [{ rows: [columnHeader.row], headerContext }];
 }
 
 function markdownTables(text: string, idPrefix: string): DocumentBlock[] {
@@ -139,9 +227,13 @@ export function chunkWorkbookDocument(document: ExtractedDocument): ChunkingOutp
 
   for (const { block, sourceBlockId } of sources) {
     const sheetName = block.sheetName || document.fileName;
-    const regions = splitTableRegions(block.rows ?? []);
+    const detectedSections = layoutSections(block);
+    const regions: LayoutSection[] = detectedSections ?? splitTableRegions(block.rows ?? []).map((region) => ({
+      rows: region.rows,
+      headerContext: [],
+    }));
     const mergesAlreadyWarned = hasMergeWarningForSheet(document.warnings, sheetName);
-    if (regions.length > 1) {
+    if (!detectedSections && regions.length > 1) {
       warnings.push(warningForMultipleTables(sheetName, sourceBlockId, regions.length));
     }
 
@@ -157,7 +249,8 @@ export function chunkWorkbookDocument(document: ExtractedDocument): ChunkingOutp
       const output = chunkTableBlock(regionBlock, [
         `[파일] ${document.fileName}`,
         `[시트] ${sheetName}`,
-        `[표] ${tableNumber}`,
+        ...region.headerContext.map((line) => `[머리행] ${line}`),
+        ...(region.itemLabel ? [`[항목] ${region.itemLabel}`] : [`[표] ${tableNumber}`]),
       ]);
       warnings.push(...output.warnings);
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label';
 import {
   AlertCircle,
   Loader2,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   RadioGroup,
@@ -42,6 +43,7 @@ import type { DocType } from '@/lib/text-preprocessor';
 import { ChunkViewerModal } from '@/components/chunk-viewer-modal';
 import { ChunkFlowViewer } from '@/components/chunk-flow-viewer';
 import { PreprocessResultSummary } from '@/components/preprocess-result-summary';
+import { ExcelSettingsDialog } from '@/components/excel-settings-dialog';
 import { Switch } from '@/components/ui/switch';
 import { ProgressStepper } from '@/components/progress-stepper';
 import { UsageGuide } from '@/components/usage-guide';
@@ -57,6 +59,7 @@ import {
   MISO_CHUNK_LIMIT,
   MISO_SEPARATOR,
 } from '@/lib/preprocessing/contracts';
+import { getExcelSheetSettings } from '@/lib/excel-layout-settings';
 
 // ReactMarkdown 플러그인: 모든 요소에 data-source-pos 속성을 주입하여 원본 위치 추적
 const addSourcePosPlugin = () => {
@@ -112,6 +115,7 @@ export default function Home() {
     error,
     status,
     result,
+    sourceDocument,
     textEncoding,
     encodingReviewRequired,
     // Actions
@@ -122,6 +126,7 @@ export default function Home() {
     reset,
     handleFileRead,
     processText,
+    reprocessExcel,
     redecodeText,
   } = useFileProcessor();
 
@@ -134,6 +139,7 @@ export default function Home() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingText, setEditingText] = useState('');
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
+  const [isExcelSettingsOpen, setIsExcelSettingsOpen] = useState(false);
   const [headerTab, setHeaderTab] = useState<'preprocess' | 'guide'>('preprocess');
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -146,6 +152,10 @@ export default function Home() {
   const selectedFileDisclosure = file
     ? getFileProcessingDisclosure(getFileProcessingRoute(file.name))
     : null;
+  const excelSheetSettings = useMemo(
+    () => getExcelSheetSettings(sourceDocument),
+    [sourceDocument],
+  );
 
   // 에러 발생 시 Toast 알림
   useEffect(() => {
@@ -824,14 +834,17 @@ export default function Home() {
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-3">
-                    <Button
-                      onClick={handleResetClick}
-                      variant="ghost"
-                      size="sm"
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      초기화
-                    </Button>
+                    {!isEditMode && excelSheetSettings.length > 0 && (
+                      <Button
+                        onClick={() => setIsExcelSettingsOpen(true)}
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <SlidersHorizontal className="mr-1.5 h-4 w-4" />
+                        엑셀 설정 수정
+                      </Button>
+                    )}
                     {!isEditMode ? (
                       <>
                         <Button
@@ -942,6 +955,14 @@ export default function Home() {
           isOpen={isChunkModalOpen}
           onClose={() => setIsChunkModalOpen(false)}
           chunks={processedChunks}
+        />
+
+        <ExcelSettingsDialog
+          open={isExcelSettingsOpen}
+          onOpenChange={setIsExcelSettingsOpen}
+          settings={excelSheetSettings}
+          processing={status === 'processing'}
+          onApply={reprocessExcel}
         />
 
         {/* 초기화 확인 다이얼로그 */}

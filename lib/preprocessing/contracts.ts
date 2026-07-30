@@ -26,6 +26,14 @@ export interface DocumentBlock {
   rows?: string[][];
   sheetName?: string;
   tableId?: string;
+  excelLayout?: {
+    usedRange: { startRow: number; endRow: number };
+    headerRows: {
+      startRow: number;
+      endRow: number;
+      source: 'print-titles' | 'detected' | 'manual';
+    };
+  };
   merges?: Array<{
     range: string;
     start: { row: number; column: number };

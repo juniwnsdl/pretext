@@ -18,6 +18,51 @@ function sheetWidth(sheet: XLSX.WorkSheet): number {
   return range.e.c - range.s.c + 1;
 }
 
+function sheetRowRange(sheet: XLSX.WorkSheet): { startRow: number; endRow: number } | null {
+  if (!sheet['!ref']) return null;
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+  return { startRow: range.s.r + 1, endRow: range.e.r + 1 };
+}
+
+function printTitleRows(
+  workbook: XLSX.WorkBook,
+  sheetIndex: number,
+): { startRow: number; endRow: number; source: 'print-titles' } | null {
+  const names = workbook.Workbook?.Names ?? [];
+  const printTitle = names.find((name) =>
+    name.Name === '_xlnm.Print_Titles'
+      && (name.Sheet === undefined || name.Sheet === sheetIndex),
+  );
+  if (!printTitle?.Ref) return null;
+  const match = /!\$(\d+):\$(\d+)(?:,|$)/u.exec(printTitle.Ref);
+  if (!match) return null;
+  const startRow = Number(match[1]);
+  const endRow = Number(match[2]);
+  if (!Number.isInteger(startRow) || !Number.isInteger(endRow) || startRow < 1 || endRow < startRow) {
+    return null;
+  }
+  return { startRow, endRow, source: 'print-titles' };
+}
+
+function detectedHeaderRows(
+  rows: string[][],
+  usedRange: { startRow: number; endRow: number },
+): { startRow: number; endRow: number; source: 'detected' } | null {
+  const candidates = rows.slice(0, 20).map((row, index) => ({
+    index,
+    populatedCells: row.filter((cell) => cell.trim().length > 0).length,
+  }));
+  const dense = candidates
+    .filter((candidate) => candidate.populatedCells >= 2)
+    .sort((left, right) =>
+      right.populatedCells - left.populatedCells || left.index - right.index,
+    )[0];
+  const selected = dense ?? candidates.find((candidate) => candidate.populatedCells > 0);
+  if (!selected) return null;
+  const rowNumber = usedRange.startRow + selected.index;
+  return { startRow: rowNumber, endRow: rowNumber, source: 'detected' };
+}
+
 function displayedRows(sheet: XLSX.WorkSheet): string[][] {
   const rows = XLSX.utils.sheet_to_json<string[]>(sheet, {
     header: 1,
@@ -69,12 +114,16 @@ export function extractWorkbookDocument(
   const blocks: DocumentBlock[] = [];
   const warnings: PreprocessIssue[] = [];
 
-  workbook.SheetNames.forEach((sheetName) => {
+  workbook.SheetNames.forEach((sheetName, sheetIndex) => {
     const sheet = workbook.Sheets[sheetName];
     if (!sheet) return;
     const rows = displayedRows(sheet);
     if (!hasContent(rows)) return;
     const merges = sheetMerges(sheet);
+    const usedRange = sheetRowRange(sheet);
+    const headerRows = usedRange
+      ? printTitleRows(workbook, sheetIndex) ?? detectedHeaderRows(rows, usedRange)
+      : null;
     const blockNumber = blocks.length + 1;
 
     blocks.push({
@@ -85,6 +134,9 @@ export function extractWorkbookDocument(
       rows,
       sheetName,
       tableId: `sheet-${blockNumber}-table-1`,
+      ...(usedRange && headerRows ? {
+        excelLayout: { usedRange, headerRows },
+      } : {}),
       ...(merges.length > 0 ? { merges } : {}),
     });
 
