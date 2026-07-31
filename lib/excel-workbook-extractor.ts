@@ -12,20 +12,98 @@ function sourceFormat(fileName: string): string {
   return match?.[1]?.toLowerCase() || 'xlsx';
 }
 
-function sheetWidth(sheet: XLSX.WorkSheet): number {
-  if (!sheet['!ref']) return 0;
-  const range = XLSX.utils.decode_range(sheet['!ref']);
-  return range.e.c - range.s.c + 1;
+type SheetDisplayRange = XLSX.Range;
+
+interface SheetCommentSummary {
+  count: number;
+  locations: string[];
 }
 
-function sheetUsedRange(sheet: XLSX.WorkSheet): {
+interface SheetInspection {
+  commentSummary: SheetCommentSummary;
+  displayRange: SheetDisplayRange | null;
+}
+
+function hasStoredValueOrFormula(cell: XLSX.CellObject): boolean {
+  return (cell.v !== undefined && cell.v !== null)
+    || (typeof cell.f === 'string' && cell.f.length > 0);
+}
+
+function compareAddresses(left: string, right: string): number {
+  const leftCoordinate = XLSX.utils.decode_cell(left);
+  const rightCoordinate = XLSX.utils.decode_cell(right);
+  return leftCoordinate.r - rightCoordinate.r || leftCoordinate.c - rightCoordinate.c;
+}
+
+function retainCommentLocation(locations: string[], address: string): void {
+  if (locations.length < 20) {
+    locations.push(address);
+    locations.sort(compareAddresses);
+    return;
+  }
+  if (compareAddresses(address, locations[locations.length - 1]) < 0) {
+    locations[locations.length - 1] = address;
+    locations.sort(compareAddresses);
+  }
+}
+
+function expandRange(range: SheetDisplayRange, coordinate: XLSX.CellAddress): void {
+  range.s.r = Math.min(range.s.r, coordinate.r);
+  range.s.c = Math.min(range.s.c, coordinate.c);
+  range.e.r = Math.max(range.e.r, coordinate.r);
+  range.e.c = Math.max(range.e.c, coordinate.c);
+}
+
+function inspectSheet(sheet: XLSX.WorkSheet): SheetInspection {
+  let displayRange: SheetDisplayRange | null = null;
+  let commentCount = 0;
+  const commentLocations: string[] = [];
+
+  for (const address of Object.keys(sheet)) {
+    if (address.startsWith('!')) continue;
+    const cell = sheet[address] as XLSX.CellObject | undefined;
+    if (!cell) continue;
+    if (Array.isArray(cell.c) && cell.c.length > 0) {
+      commentCount += 1;
+      retainCommentLocation(commentLocations, address);
+    }
+    if (!hasStoredValueOrFormula(cell)) continue;
+    const coordinate = XLSX.utils.decode_cell(address);
+    if (!displayRange) {
+      displayRange = { s: { ...coordinate }, e: { ...coordinate } };
+    } else {
+      expandRange(displayRange, coordinate);
+    }
+  }
+
+  if (displayRange) {
+    for (const merge of sheet['!merges'] ?? []) {
+      const intersectsDisplayRange = merge.s.r <= displayRange.e.r
+        && merge.e.r >= displayRange.s.r
+        && merge.s.c <= displayRange.e.c
+        && merge.e.c >= displayRange.s.c;
+      if (!intersectsDisplayRange) continue;
+      expandRange(displayRange, merge.s);
+      expandRange(displayRange, merge.e);
+    }
+  }
+
+  return {
+    commentSummary: { count: commentCount, locations: commentLocations },
+    displayRange,
+  };
+}
+
+export function extractSheetCommentSummary(sheet: XLSX.WorkSheet): SheetCommentSummary {
+  return inspectSheet(sheet).commentSummary;
+}
+
+function sheetUsedRange(range: SheetDisplayRange): {
   startRow: number;
   endRow: number;
   startColumn: number;
   endColumn: number;
-} | null {
-  if (!sheet['!ref']) return null;
-  const range = XLSX.utils.decode_range(sheet['!ref']);
+} {
   return {
     startRow: range.s.r + 1,
     endRow: range.e.r + 1,
@@ -113,24 +191,24 @@ function detectedHeaderRows(
   return { startRow: rowNumber, endRow: rowNumber, source: 'detected' };
 }
 
-function displayedRows(sheet: XLSX.WorkSheet): string[][] {
+function displayedRows(sheet: XLSX.WorkSheet, range: SheetDisplayRange | null): string[][] {
+  if (!range) return [];
   const rows = XLSX.utils.sheet_to_json<string[]>(sheet, {
     header: 1,
     raw: false,
     defval: '',
     blankrows: true,
+    range,
   });
-  const width = sheetWidth(sheet);
-  const rangeStart = sheet['!ref']
-    ? XLSX.utils.decode_range(sheet['!ref']).s
-    : { r: 0, c: 0 };
+  const width = range.e.c - range.s.c + 1;
+  const rangeStart = range.s;
   const normalized = rows.map((row) => Array.from(
     { length: Math.max(width, row.length) },
     (_, column) => String(row[column] ?? ''),
   ));
   for (const merge of sheet['!merges'] ?? []) {
-    for (let row = merge.s.r; row <= merge.e.r; row += 1) {
-      for (let column = merge.s.c; column <= merge.e.c; column += 1) {
+    for (let row = Math.max(merge.s.r, range.s.r); row <= Math.min(merge.e.r, range.e.r); row += 1) {
+      for (let column = Math.max(merge.s.c, range.s.c); column <= Math.min(merge.e.c, range.e.c); column += 1) {
         if (row === merge.s.r && column === merge.s.c) continue;
         const outputRow = row - rangeStart.r;
         const outputColumn = column - rangeStart.c;
@@ -183,15 +261,25 @@ export function extractWorkbookDocument(
   const blocks: DocumentBlock[] = [];
   const warnings: PreprocessIssue[] = [];
   const missingFormulaResultLocations: string[] = [];
+  let commentedCellCount = 0;
+  const commentedCellLocations: string[] = [];
 
   workbook.SheetNames.forEach((sheetName, sheetIndex) => {
     const sheet = workbook.Sheets[sheetName];
     if (!sheet) return;
-    const rows = displayedRows(sheet);
+    const inspection = inspectSheet(sheet);
+    const rows = displayedRows(sheet, inspection.displayRange);
     const formulaCells = extractSheetFormulaCells(sheet);
+    commentedCellCount += inspection.commentSummary.count;
+    if (commentedCellLocations.length < 20) {
+      commentedCellLocations.push(...inspection.commentSummary.locations.slice(
+        0,
+        20 - commentedCellLocations.length,
+      ).map((address) => `${sheetName}!${address}`));
+    }
     if (!hasContent(rows) && formulaCells.length === 0) return;
     const merges = sheetMerges(sheet);
-    const usedRange = sheetUsedRange(sheet);
+    const usedRange = inspection.displayRange ? sheetUsedRange(inspection.displayRange) : null;
     const headerRows = usedRange
       ? printTitleRows(workbook, sheetIndex)
         ?? detectedHeaderRows(rows, usedRange, merges)
@@ -243,7 +331,20 @@ export function extractWorkbookDocument(
     });
   }
 
+  if (commentedCellCount > 0) {
+    warnings.push({
+      code: 'EXCEL_CELL_COMMENTS_UNSUPPORTED',
+      severity: 'warning',
+      message: 'Excel 파일에서 총 메모 또는 스레드형 댓글을 감지했습니다. 현재 추출은 메모/댓글의 내용, 작성자, 스레드, 멘션 및 해결 상태를 전처리 결과에 포함하지 않습니다. 업무상 중요한 정보가 있을 수 있으므로 원본 Excel에서 확인하세요. 위치는 최대 20개만 표시합니다.',
+      count: commentedCellCount,
+      locations: commentedCellLocations,
+    });
+  }
+
   if (blocks.length === 0) {
+    if (commentedCellCount > 0) {
+      throw new Error('Excel 파일에 메모 또는 스레드형 댓글만 있어 처리할 수 있는 셀 내용이 없습니다. 메모/댓글의 내용은 지원되지 않으므로 원본 Excel에서 확인하세요.');
+    }
     throw new Error('워크북이 비어 있거나 처리할 수 있는 내용이 없습니다.');
   }
 
