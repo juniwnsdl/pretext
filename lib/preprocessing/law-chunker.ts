@@ -204,6 +204,26 @@ export function parseLegalHeading(line: string): ParsedLegalHeading | null {
       return { kind: 'addendum', heading: value, inlineBody: '', leadingMetadata };
     }
   }
+  const decoratedAppendixMatch = value.match(
+    /^(?:■\s*[^\[\n]*?\s*)?\[(별표|별지)(?:\s*(?:제\s*)?\d+(?:\s*의\s*\d+)?(?:호(?:서식)?)?)?\]/u,
+  );
+  if (decoratedAppendixMatch) {
+    const suffix = value.slice(decoratedAppendixMatch[0].length);
+    const rest = suffix.trim();
+    if (
+      !isImmediateLegalCitationSuffix(suffix) &&
+      !isCitationContinuation(rest) &&
+      !isSentenceLikeText(rest) &&
+      !isTocLeaderTail(rest)
+    ) {
+      return {
+        kind: decoratedAppendixMatch[1] === '별표' ? 'appendix' : 'form',
+        heading: value,
+        inlineBody: '',
+        leadingMetadata,
+      };
+    }
+  }
   const appendixMatch = value.match(/^(별표|별지)(?=\s|$|\d)\s*(?:제\s*)?\d*(?:호|의\s*\d+)?/u);
   if (appendixMatch) {
     const rest = value.slice(appendixMatch[0].length).trim();

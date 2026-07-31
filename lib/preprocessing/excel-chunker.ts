@@ -4,6 +4,7 @@ import {
   type ChunkDraft,
   type ChunkingOutput,
   type DocumentBlock,
+  type ExcelFormulaOutput,
   type ExtractedDocument,
   type PreprocessIssue,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
@@ -38,6 +39,16 @@ interface LayoutSection {
   headerContext: string[];
   itemLabel?: string;
 }
+
+interface LayoutResult {
+  sections: LayoutSection[];
+  complexHeader: boolean;
+  headerMerges: NonNullable<DocumentBlock['merges']>;
+  emptyHeaderColumns: number[];
+}
+
+const COMPLEX_EXCEL_HEADER_MESSAGE =
+  '복잡한 병합·다단 머리행이 감지되었습니다. 일부 열 이름이 데이터와 정확히 연결되지 않을 수 있습니다. 원본과 결과를 비교하거나 ‘엑셀 머리행 설정’에서 머리행 범위를 확인하세요.';
 
 function isFullyEmptyRow(row: string[]): boolean {
   return row.every((cell) => cell.trim().length === 0);
@@ -80,7 +91,79 @@ function headerContextLine(row: string[]): string | null {
   return populated.length > 0 ? populated.join(' | ') : null;
 }
 
-function layoutSections(block: DocumentBlock): LayoutSection[] | null {
+function normalizeHeaderSegment(value: string): string {
+  return value
+    .replace(/<br\s*\/?\s*>/giu, ' ')
+    .replace(/\r\n?|\n/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function mergeAnchorValue(
+  block: DocumentBlock,
+  relativeRow: number,
+  relativeColumn: number,
+): string {
+  const layout = block.excelLayout;
+  const rows = block.rows ?? [];
+  if (!layout) return rows[relativeRow]?.[relativeColumn] ?? '';
+  const absoluteRow = layout.usedRange.startRow - 1 + relativeRow;
+  const absoluteColumn = (layout.usedRange.startColumn ?? 1) - 1 + relativeColumn;
+  const merge = block.merges?.find((candidate) =>
+    absoluteRow >= candidate.start.row
+      && absoluteRow <= candidate.end.row
+      && absoluteColumn >= candidate.start.column
+      && absoluteColumn <= candidate.end.column
+      && candidate.start.row >= layout.headerRows.startRow - 1
+      && candidate.end.row <= layout.headerRows.endRow - 1,
+  );
+  if (!merge) return rows[relativeRow]?.[relativeColumn] ?? '';
+  const anchorRow = merge.start.row - (layout.usedRange.startRow - 1);
+  const anchorColumn = merge.start.column - ((layout.usedRange.startColumn ?? 1) - 1);
+  return rows[anchorRow]?.[anchorColumn] ?? '';
+}
+
+function composedHeaderRow(
+  block: DocumentBlock,
+  headerRowIndexes: number[],
+): string[] {
+  const rows = block.rows ?? [];
+  const width = Math.max(0, ...rows.map((row) => row.length));
+  return Array.from({ length: width }, (_, column) => {
+    const segments: string[] = [];
+    for (const rowIndex of headerRowIndexes) {
+      const segment = normalizeHeaderSegment(mergeAnchorValue(block, rowIndex, column));
+      if (!segment || segments.at(-1) === segment) continue;
+      segments.push(segment);
+    }
+    return segments.join(' > ');
+  });
+}
+
+function rowsWithFormulaOutput(
+  block: DocumentBlock,
+  formulaOutput: ExcelFormulaOutput,
+): string[][] {
+  const rows = block.rows ?? [];
+  const layout = block.excelLayout;
+  if (formulaOutput !== 'value-and-formula' || !layout || !block.formulaCells?.length) {
+    return rows;
+  }
+  const output = rows.map((row) => [...row]);
+  const startColumn = layout.usedRange.startColumn ?? 1;
+  for (const formulaCell of block.formulaCells) {
+    const row = formulaCell.row - layout.usedRange.startRow;
+    const column = formulaCell.column - startColumn;
+    if (!output[row] || column < 0 || column >= output[row].length) continue;
+    const displayedValue = output[row][column];
+    output[row][column] = displayedValue.trim()
+      ? `${displayedValue} (수식: ${formulaCell.formula})`
+      : `(수식: ${formulaCell.formula})`;
+  }
+  return output;
+}
+
+function layoutSections(block: DocumentBlock): LayoutResult | null {
   const layout = block.excelLayout;
   const rows = block.rows ?? [];
   if (!layout || rows.length === 0) return null;
@@ -96,33 +179,63 @@ function layoutSections(block: DocumentBlock): LayoutSection[] | null {
     return null;
   }
 
-  const headerCandidates = rows
+  const selectedHeaders = rows
     .slice(headerStart, headerEnd + 1)
     .map((row, index) => ({
       absoluteIndex: headerStart + index,
-      row,
-      populatedCells: row.filter((cell) => cell.trim().length > 0).length,
-    }))
-    .filter((candidate) => candidate.populatedCells > 0)
-    .sort((left, right) =>
-      right.populatedCells - left.populatedCells
-        || right.absoluteIndex - left.absoluteIndex,
-    );
-  const columnHeader = headerCandidates[0];
-  if (!columnHeader) return null;
+      populatedCells: populatedCellCount(row),
+    }));
+  const nonEmptyHeaders = selectedHeaders.filter((candidate) => candidate.populatedCells > 0);
+  if (nonEmptyHeaders.length === 0) return null;
 
-  const headerContext = rows
-    .slice(0, headerEnd + 1)
-    .filter((_, index) => index !== columnHeader.absoluteIndex)
+  const headerMerges = (block.merges ?? []).filter((merge) =>
+    merge.end.row >= layout.headerRows.startRow - 1
+      && merge.start.row <= layout.headerRows.endRow - 1,
+  );
+  const hasContainedHeaderMerge = headerMerges.some((merge) =>
+    merge.start.row >= layout.headerRows.startRow - 1
+      && merge.end.row <= layout.headerRows.endRow - 1,
+  );
+
+  const mayPeelTitleRows =
+    layout.headerRows.source !== 'manual' && !hasContainedHeaderMerge;
+  let firstHeaderIndex = 0;
+  while (
+    mayPeelTitleRows
+    &&
+    firstHeaderIndex < nonEmptyHeaders.length - 1
+    && nonEmptyHeaders[firstHeaderIndex].populatedCells === 1
+    && nonEmptyHeaders.slice(firstHeaderIndex + 1).some((candidate) => candidate.populatedCells >= 2)
+  ) {
+    firstHeaderIndex += 1;
+  }
+  const titleHeaderIndexes = nonEmptyHeaders
+    .slice(0, firstHeaderIndex)
+    .map((candidate) => candidate.absoluteIndex);
+  const columnHeaderIndexes = nonEmptyHeaders
+    .slice(firstHeaderIndex)
+    .map((candidate) => candidate.absoluteIndex);
+  const columnHeader = composedHeaderRow(block, columnHeaderIndexes);
+  if (!columnHeader.some((cell) => cell.length > 0)) return null;
+
+  const contextRows = [
+    ...rows.slice(0, headerStart),
+    ...titleHeaderIndexes.map((index) => rows[index]),
+  ];
+  const headerContext = contextRows
     .map(headerContextLine)
     .filter((line): line is string => line !== null);
+  const startColumn = layout.usedRange.startColumn ?? 1;
+  const emptyHeaderColumns = columnHeader.flatMap((cell, index) =>
+    cell.length === 0 ? [startColumn + index] : [],
+  );
   const sections: LayoutSection[] = [];
   let itemLabel: string | undefined;
   let dataRows: string[][] = [];
   const consume = (): void => {
     if (dataRows.length > 0) {
       sections.push({
-        rows: [columnHeader.row, ...dataRows],
+        rows: [columnHeader, ...dataRows],
         headerContext,
         ...(itemLabel ? { itemLabel } : {}),
       });
@@ -145,9 +258,14 @@ function layoutSections(block: DocumentBlock): LayoutSection[] | null {
   }
   consume();
 
-  return sections.length > 0
-    ? sections
-    : [{ rows: [columnHeader.row], headerContext }];
+  return {
+    sections: sections.length > 0
+      ? sections
+      : [{ rows: [columnHeader], headerContext }],
+    complexHeader: columnHeaderIndexes.length > 1 || headerMerges.length > 0,
+    headerMerges,
+    emptyHeaderColumns,
+  };
 }
 
 function markdownTables(text: string, idPrefix: string): DocumentBlock[] {
@@ -381,11 +499,16 @@ export function chunkWorkbookDocument(document: ExtractedDocument): ChunkingOutp
     }
 
     const { block, sourceBlockId } = segment.table;
+    const displayBlock: DocumentBlock = {
+      ...block,
+      rows: rowsWithFormulaOutput(block, document.excelOptions?.formulaOutput ?? 'value-only'),
+    };
     const sheetName = block.sheetName || document.fileName;
-    const detectedSections = layoutSections(block);
+    const detectedLayout = layoutSections(displayBlock);
+    const detectedSections = detectedLayout?.sections ?? null;
     let continuationMergeCount = 0;
     const regions: LayoutSection[] = detectedSections ?? mergeContinuationRegions(
-      splitTableRegions(block.rows ?? []).map((region) => {
+      splitTableRegions(displayBlock.rows ?? []).map((region) => {
         const peeled = peelTitleRows(region.rows);
         return {
           rows: peeled.rows,
@@ -403,6 +526,29 @@ export function chunkWorkbookDocument(document: ExtractedDocument): ChunkingOutp
         locations: [`${sheetName}:${sourceBlockId}`],
       });
     }
+    if (detectedLayout?.complexHeader) {
+      warnings.push({
+        code: 'COMPLEX_EXCEL_HEADER',
+        severity: 'warning',
+        message: COMPLEX_EXCEL_HEADER_MESSAGE,
+        count: detectedLayout.headerMerges.length || undefined,
+        locations: detectedLayout.headerMerges.length > 0
+          ? detectedLayout.headerMerges.map((merge) => `${sheetName}!${merge.range}`)
+          : [`${sheetName}:${sourceBlockId}`],
+      });
+    }
+    if (detectedLayout && detectedLayout.emptyHeaderColumns.length > 0) {
+      warnings.push({
+        code: 'EMPTY_EXCEL_HEADER',
+        severity: 'warning',
+        message: `시트 "${sheetName}"의 일부 열에 머리행 제목이 없습니다. 원본과 결과를 비교하세요.`,
+        count: detectedLayout.emptyHeaderColumns.length,
+        locations: detectedLayout.emptyHeaderColumns.map((column) => {
+          const label = XLSX.utils.encode_col(column - 1);
+          return `${sheetName}!${label}:${label}`;
+        }),
+      });
+    }
     const mergesAlreadyWarned = hasMergeWarningForSheet(document.warnings, sheetName);
     if (!detectedSections && regions.length > 1) {
       warnings.push(warningForMultipleTables(sheetName, sourceBlockId, regions.length));
@@ -412,7 +558,7 @@ export function chunkWorkbookDocument(document: ExtractedDocument): ChunkingOutp
       const tableNumber = (tableCountsBySheet.get(sheetName) ?? 0) + 1;
       tableCountsBySheet.set(sheetName, tableNumber);
       const regionBlock: DocumentBlock = {
-        ...block,
+        ...displayBlock,
         id: `${block.id}-region-${regionIndex + 1}`,
         rows: region.rows,
         merges: mergesAlreadyWarned || regionIndex > 0 ? undefined : block.merges,

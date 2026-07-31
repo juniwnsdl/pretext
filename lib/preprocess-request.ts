@@ -178,6 +178,14 @@ function exceedsDocumentBudgets(
         if (isRecord(merge) && addText(merge.range)) return true;
       }
     }
+
+    if (Array.isArray(block.formulaCells)) {
+      if (block.formulaCells.length > PREPROCESS_MAX_TABLE_CELLS) return true;
+      if (addStructure(block.formulaCells.length)) return true;
+      for (const formulaCell of block.formulaCells) {
+        if (isRecord(formulaCell) && addText(formulaCell.formula)) return true;
+      }
+    }
   }
 
   return false;
@@ -226,12 +234,29 @@ function validMerge(value: unknown): boolean {
     && validPosition(value.end);
 }
 
-function validExcelRowRange(value: unknown): value is { startRow: number; endRow: number } {
-  return isRecord(value)
-    && Number.isInteger(value.startRow)
-    && Number(value.startRow) >= 1
-    && Number.isInteger(value.endRow)
-    && Number(value.endRow) >= Number(value.startRow);
+function validExcelRowRange(value: unknown): value is {
+  startRow: number;
+  endRow: number;
+  startColumn?: number;
+  endColumn?: number;
+} {
+  if (!isRecord(value)) return false;
+  if (
+    !Number.isInteger(value.startRow)
+    || Number(value.startRow) < 1
+    || !Number.isInteger(value.endRow)
+    || Number(value.endRow) < Number(value.startRow)
+  ) {
+    return false;
+  }
+  const hasStartColumn = hasOwn(value, 'startColumn');
+  const hasEndColumn = hasOwn(value, 'endColumn');
+  if (hasStartColumn !== hasEndColumn) return false;
+  if (!hasStartColumn) return true;
+  return Number.isInteger(value.startColumn)
+    && Number(value.startColumn) >= 1
+    && Number.isInteger(value.endColumn)
+    && Number(value.endColumn) >= Number(value.startColumn);
 }
 
 function validExcelHeaderRows(value: unknown): value is {
@@ -256,6 +281,17 @@ function validExcelLayout(value: unknown): boolean {
   const headerRows = value.headerRows;
   return Number(headerRows.startRow) >= value.usedRange.startRow
     && Number(headerRows.endRow) <= value.usedRange.endRow;
+}
+
+function validFormulaCell(value: unknown): boolean {
+  return isRecord(value)
+    && Number.isInteger(value.row)
+    && Number(value.row) >= 1
+    && Number.isInteger(value.column)
+    && Number(value.column) >= 1
+    && typeof value.formula === 'string'
+    && /^=\S/u.test(value.formula)
+    && typeof value.hasStoredResult === 'boolean';
 }
 
 function validBlock(value: unknown): value is DocumentBlock {
@@ -292,6 +328,50 @@ function validBlock(value: unknown): value is DocumentBlock {
   if (hasOwn(value, 'excelLayout') && (value.kind !== 'table' || !validExcelLayout(value.excelLayout))) {
     return false;
   }
+  const tableRows = Array.isArray(value.rows) ? value.rows as string[][] : [];
+  const maximumRowWidth = Math.max(0, ...tableRows.map((row) => row.length));
+  if (hasOwn(value, 'excelLayout') && isRecord(value.excelLayout)) {
+    const usedRange = value.excelLayout.usedRange;
+    if (
+      isRecord(usedRange)
+      && hasOwn(usedRange, 'startColumn')
+      && hasOwn(usedRange, 'endColumn')
+      && Number(usedRange.endColumn) - Number(usedRange.startColumn) + 1 !== maximumRowWidth
+    ) {
+      return false;
+    }
+  }
+  if (hasOwn(value, 'formulaCells')) {
+    if (
+      value.kind !== 'table'
+      || !hasOwn(value, 'excelLayout')
+      || !Array.isArray(value.formulaCells)
+      || !value.formulaCells.every(validFormulaCell)
+    ) {
+      return false;
+    }
+    const usedRange = (value.excelLayout as DocumentBlock['excelLayout'])?.usedRange;
+    const formulaCoordinates = new Set<string>();
+    const actualCellCount = tableRows.reduce((total, row) => total + row.length, 0);
+    if (!usedRange || value.formulaCells.length > actualCellCount || value.formulaCells.some((formulaCell) => {
+      const cell = formulaCell as { row: number; column: number };
+      const relativeRow = cell.row - usedRange.startRow;
+      const relativeColumn = cell.column - (usedRange.startColumn ?? 1);
+      const coordinate = `${cell.row}:${cell.column}`;
+      if (formulaCoordinates.has(coordinate)) return true;
+      formulaCoordinates.add(coordinate);
+      return cell.row < usedRange.startRow
+        || cell.row > usedRange.endRow
+        || (usedRange.startColumn !== undefined && cell.column < usedRange.startColumn)
+        || (usedRange.endColumn !== undefined && cell.column > usedRange.endColumn)
+        || relativeRow < 0
+        || relativeRow >= tableRows.length
+        || relativeColumn < 0
+        || relativeColumn >= (tableRows[relativeRow]?.length ?? 0);
+    })) {
+      return false;
+    }
+  }
   return !hasOwn(value, 'merges')
     || (Array.isArray(value.merges) && value.merges.every(validMerge));
 }
@@ -321,6 +401,9 @@ function cloneBlock(block: DocumentBlock): DocumentBlock {
         end: { ...merge.end },
       })),
     } : {}),
+    ...(block.formulaCells ? {
+      formulaCells: block.formulaCells.map((formulaCell) => ({ ...formulaCell })),
+    } : {}),
   };
 }
 
@@ -338,6 +421,11 @@ function normalizeDocument(value: unknown):
     || !EXTRACTION_METHODS.has(value.extractionMethod as ExtractedDocument['extractionMethod'])
     || !Array.isArray(value.blocks)
     || !Array.isArray(value.warnings)
+    || (hasOwn(value, 'excelOptions') && (
+      !isRecord(value.excelOptions)
+      || (value.excelOptions.formulaOutput !== 'value-only'
+        && value.excelOptions.formulaOutput !== 'value-and-formula')
+    ))
   ) {
     return { ok: false, error: { code: 'INVALID_DOCUMENT', message: 'Document shape is invalid.' } };
   }
@@ -372,6 +460,11 @@ function normalizeDocument(value: unknown):
         ...warning,
         ...(warning.locations ? { locations: [...warning.locations] } : {}),
       })),
+      ...(isRecord(value.excelOptions) ? {
+        excelOptions: {
+          formulaOutput: value.excelOptions.formulaOutput as 'value-only' | 'value-and-formula',
+        },
+      } : {}),
     },
   };
 }

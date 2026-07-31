@@ -89,6 +89,15 @@ function isEnglishStructuralHeading(value: string): boolean {
     !/[.!?]$/u.test(value.replace(/^(?:Section|Chapter|Part|Volume|Appendix|Annex|Attachment)\s+[A-Z0-9][\w.]*\.?/iu, ''));
 }
 
+function isRomanStructuralHeading(value: string): boolean {
+  if (value.length > 80) return false;
+  return /^(?:(?:VIII|VII|III|XII|XI|IX|VI|IV|II|X|V|I)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ])(?:\.\s*|\s+)[가-힣]\S*(?:\s+\S+)*$/u.test(value);
+}
+
+function isNumberedFormHeading(value: string): boolean {
+  return /^\[\s*서식\s+제\s*\d+\s*호(?:\s*-\s*\d+)?\s*\]$/u.test(value);
+}
+
 function parseGeneralHeading(line: string, insideArticle: boolean): GeneralHeading | null {
   const markdown = stripMarkdownHeading(line);
   if (markdown) {
@@ -115,6 +124,9 @@ function parseGeneralHeading(line: string, insideArticle: boolean): GeneralHeadi
   const value = line.trim();
   if (!value || line !== value) return null;
   if (/^제\s*\d+\s*(?:편|장|절|관)(?:\s+\S.*)?$/u.test(value) && !isSentenceLikeTitle(value)) {
+    return { text: value, inlineBody: '', kind: 'structural' };
+  }
+  if (!insideArticle && (isRomanStructuralHeading(value) || isNumberedFormHeading(value))) {
     return { text: value, inlineBody: '', kind: 'structural' };
   }
   // Circled numbers (①) and single-syllable markers (가., 나)) are list or

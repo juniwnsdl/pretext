@@ -47,3 +47,21 @@ export const DOCUMENT_HANDLING_STAGES: readonly DocumentHandlingStage[] = [
 
 export const DOCUMENT_HANDLING_SECURITY_NOTICE =
   '상용 AI가 항상 더 정확하거나 모든 파일을 한 번에 처리하는 것은 아닙니다. 사내 문서는 회사 보안정책에서 허용한 환경에서만 사용하고, 처리 결과는 반드시 원문과 비교해 확인하세요.';
+
+export const TABLE_HANDLING_GUIDANCE = [
+  {
+    title: '병합·다단 머리행',
+    description:
+      '엑셀에 병합된 셀이나 여러 줄 머리행이 있으면 열마다 제목을 다시 구성합니다. 상위·하위 제목은 >로 연결하고 중복 제목은 제거합니다. 빈 제목은 임의로 만들지 않으므로 경고가 나오면 원본과 결과를 비교하세요.',
+  },
+  {
+    title: '수식이 있는 엑셀',
+    description:
+      '기본값은 파일에 저장된 표시값만 출력합니다. 엑셀 머리행 설정에서 표시값 + 수식을 선택할 수 있지만, 이 앱은 수식을 다시 계산하지 않습니다. 저장된 결과가 없는 셀은 원본 Excel에서 확인하세요.',
+  },
+  {
+    title: 'Word·HWP 변환본·PDF의 표',
+    description:
+      'Word(DOCX) 표, HWP를 DOCX 또는 PDF로 변환한 문서, PDF에서 추출된 표도 병합 셀·다단 머리행·누락된 열·읽기 순서를 같은 방식으로 확인해야 합니다. HWP는 직접 지원하지 않으므로 DOCX 또는 PDF로 변환하세요.',
+  },
+] as const;

@@ -5,6 +5,14 @@ export const MISO_JOINER = '\n@@@\n';
 
 export type ResultStatus = 'ready' | 'review' | 'blocked';
 export type IssueSeverity = 'warning' | 'error';
+export type ExcelFormulaOutput = 'value-only' | 'value-and-formula';
+
+export interface ExcelFormulaCell {
+  row: number;
+  column: number;
+  formula: string;
+  hasStoredResult: boolean;
+}
 
 export interface PreprocessIssue {
   code: string;
@@ -27,13 +35,19 @@ export interface DocumentBlock {
   sheetName?: string;
   tableId?: string;
   excelLayout?: {
-    usedRange: { startRow: number; endRow: number };
+    usedRange: {
+      startRow: number;
+      endRow: number;
+      startColumn?: number;
+      endColumn?: number;
+    };
     headerRows: {
       startRow: number;
       endRow: number;
       source: 'print-titles' | 'detected' | 'manual';
     };
   };
+  formulaCells?: ExcelFormulaCell[];
   merges?: Array<{
     range: string;
     start: { row: number; column: number };
@@ -48,6 +62,9 @@ export interface ExtractedDocument {
   extractionMethod: 'local-text' | 'local-excel' | 'local-docx' | 'miso' | 'law-api' | 'user-edited';
   blocks: DocumentBlock[];
   warnings: PreprocessIssue[];
+  excelOptions?: {
+    formulaOutput: ExcelFormulaOutput;
+  };
 }
 
 export interface ChunkDraft {

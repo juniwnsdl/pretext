@@ -47,8 +47,9 @@ interface ManualSection {
 }
 
 const safetyLabel = /^(?:\[\s*(?:주의|경고|위험|안전|중요|필독)\s*\]|(?:주의|경고|위험|안전|중요|필독)\s*[:：]|※)/u;
-const numberedPrefix = /^\s*(?:\d+\.\s+|\d+\)\s+|\d+-\d+\s+|[가-힣]\)\s+|[①-⑳]\s*|Step\s*\d+(?:\s*[:.)-])?\s+|단계\s*\d+(?:\s*[:.)-])?\s+)/iu;
+const numberedPrefix = /^\s*(?:\d+\.\s+|\d+\)\s+|\d+-\d+\s+|\d+\s+|[가-힣]\)\s+|[①-⑳]\s*|Step\s*\d+(?:\s*[:.)-])?\s+|단계\s*\d+(?:\s*[:.)-])?\s+)/iu;
 const imperativeEnding = /(?:다|시오|세요)\.\s*$/u;
+const safetyCommandEnding = /(?:금지|(?:작업|운전|작동)\s*중지)(?:한다|합니다|하시오|하십시오)?\s*[).]?\s*$/u;
 const knownSectionTitle = /^(?:(?:작업\s*)?개요|목적|범위|준비(?:\s*사항)?|절차|작업\s*절차|점검(?:\s*사항)?|기동|운전|종료|주의(?:\s*사항)?|안전\s*수칙)(?:입니다)?\.?\s*$/u;
 
 function unique(values: string[]): string[] {
@@ -69,6 +70,7 @@ export function classifyManualLine(line: string): ManualLineKind {
   const trimmed = line.trim();
   if (!trimmed) return 'paragraph';
   if (safetyLabel.test(trimmed)) return 'safety';
+  if (safetyCommandEnding.test(trimmed)) return 'step';
   if (/^#{1,6}\s+\S/u.test(trimmed)) return 'section';
   if (knownSectionTitle.test(trimmed)) return 'section';
   const numbered = trimmed.match(numberedPrefix);
@@ -207,9 +209,7 @@ function appendRawLine(section: ManualSection, line: string, sourceId: string): 
     ) {
       previous.text += `\n${line}`;
       previous.sourceIds = unique([...previous.sourceIds, sourceId]);
-      if (previous.role === 'step') {
-        previous.safetySuffix = `${previous.safetySuffix ?? ''}\n${line}`;
-      }
+      previous.safetySuffix = `${previous.safetySuffix ?? ''}\n${line}`;
       return;
     }
     section.pendingSafety.push({ text: line, sourceId });
@@ -265,6 +265,8 @@ function sectionLineOrdinal(line: string): SectionOrdinal | null {
   if (match) return { family: `dash-${match[1]}`, value: Number(match[2]) };
   match = trimmed.match(/^(\d+)[.)]\s+/u);
   if (match) return { family: 'arabic', value: Number(match[1]) };
+  match = trimmed.match(/^(\d+)\s+/u);
+  if (match) return { family: 'bare-arabic', value: Number(match[1]) };
   match = trimmed.match(/^([①-⑳])\s*/u);
   if (match) return { family: 'circled', value: match[1].codePointAt(0)! - 0x2460 + 1 };
   match = trimmed.match(/^([가-힣])\)\s+/u);
@@ -278,7 +280,7 @@ function sectionLineOrdinal(line: string): SectionOrdinal | null {
 }
 
 /**
- * Section-classified numbered lines that form a consecutive sibling run
+ * Numbered section/step lines that form a consecutive sibling run
  * (1., 2., 3. on adjacent lines) are a list, not a stack of headings —
  * treating each as a section silently drops every title but the last.
  */
@@ -287,7 +289,7 @@ function demotedSectionLineIndexes(lines: string[]): Set<number> {
     .map((line, index) => ({
       index,
       blank: line.trim().length === 0,
-      section: classifyManualLine(line) === 'section',
+      section: ['section', 'step'].includes(classifyManualLine(line)),
       ordinal: sectionLineOrdinal(line),
     }))
     .filter((entry) => !entry.blank);
@@ -378,8 +380,23 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
 
     const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
     const demotedSectionLines = demotedSectionLineIndexes(lines);
+    let deepNumberingWarned = false;
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
+      if (
+        !deepNumberingWarned &&
+        block.headingPath.length === 0 &&
+        line.trim().length <= 120 &&
+        /^\d+(?:\.\d+)+\s+\S/u.test(line.trim())
+      ) {
+        current.warnings.push({
+          code: 'manual-deep-numbering-unstructured',
+          severity: 'warning',
+          message: '깊은 번호 체계(예: 2.1.1)가 감지되었습니다. 원문 계층이 평탄화될 수 있으므로 전처리 결과를 확인하세요.',
+          locations: [block.id],
+        });
+        deepNumberingWarned = true;
+      }
       if (
         isMarkdownTableLine(line) &&
         index + 1 < lines.length &&
@@ -525,8 +542,9 @@ function renderSection(
       continue;
     }
 
+    const safetyAware = Boolean(unit.safetyPrefix || unit.safetySuffix);
     let nonStepFragments = [unit.text];
-    if (unit.role !== 'step' && unit.text.length > limit) {
+    if (unit.role !== 'step' && !safetyAware && unit.text.length > limit) {
       // Prose that separates cleanly at paragraph or sentence boundaries is
       // split; anything that would need an arbitrary mid-word cut is blocked.
       const attempted = splitTextPreservingSeparators(unit.text, limit);
@@ -542,7 +560,7 @@ function renderSection(
         });
       }
     }
-    const fragments = unit.role === 'step'
+    const fragments = unit.role === 'step' || safetyAware
       ? splitOversizedStep(unit, limit)
       : nonStepFragments;
     if (!fragments) {

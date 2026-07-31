@@ -22,8 +22,8 @@ import {
   type DecodedText,
 } from '@/lib/text-file-decoder';
 import {
-  applyManualExcelHeaderRows,
-  type ExcelHeaderRowUpdate,
+  applyExcelProcessingSettings,
+  type ExcelProcessingUpdate,
 } from '@/lib/excel-layout-settings';
 import type { DocType } from '@/lib/text-preprocessor';
 import type { MolegLawSearchItem } from '@/lib/moleg-law-types';
@@ -64,7 +64,7 @@ export interface UseFileProcessorReturn {
   handleFileRead: (file: File) => Promise<void>;
   handleLawRead: (law: MolegLawSearchItem) => Promise<void>;
   processText: () => Promise<void>;
-  reprocessExcel: (updates: ExcelHeaderRowUpdate[]) => Promise<void>;
+  reprocessExcel: (update: ExcelProcessingUpdate) => Promise<void>;
   redecodeText: (encoding: 'utf-8' | 'euc-kr') => Promise<void>;
 }
 
@@ -614,14 +614,14 @@ export function useFileProcessor(): UseFileProcessorReturn {
     await runPreprocess(document, docType);
   }, [docType, inputText, runPreprocess]);
 
-  const reprocessExcel = useCallback(async (updates: ExcelHeaderRowUpdate[]) => {
+  const reprocessExcel = useCallback(async (update: ExcelProcessingUpdate) => {
     const document = sourceDocumentRef.current;
     if (!document) {
       setError('There is no Excel workbook to reprocess.');
       return;
     }
     try {
-      const updated = applyManualExcelHeaderRows(document, updates);
+      const updated = applyExcelProcessingSettings(document, update);
       sourceDocumentRef.current = updated;
       setSourceDocument(updated);
       await runPreprocess(updated, 'excel');

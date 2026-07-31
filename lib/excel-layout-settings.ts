@@ -1,4 +1,5 @@
 import {
+  type ExcelFormulaOutput,
   type ExtractedDocument,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './preprocessing/contracts.ts';
@@ -17,6 +18,17 @@ export interface ExcelHeaderRowUpdate {
   blockId: string;
   startRow: number;
   endRow: number;
+}
+
+export interface ExcelProcessingUpdate {
+  headerRows: ExcelHeaderRowUpdate[];
+  formulaOutput: ExcelFormulaOutput;
+}
+
+export function getExcelFormulaOutput(
+  document: ExtractedDocument | null,
+): ExcelFormulaOutput {
+  return document?.excelOptions?.formulaOutput ?? 'value-only';
 }
 
 /** Returns only locally extracted workbook sheets that have editable layout metadata. */
@@ -38,35 +50,38 @@ export function getExcelSheetSettings(document: ExtractedDocument | null): Excel
 }
 
 /** Clones a workbook document and marks validated sheet header ranges as manual overrides. */
-export function applyManualExcelHeaderRows(
+export function applyExcelProcessingSettings(
   document: ExtractedDocument,
-  updates: ExcelHeaderRowUpdate[],
+  update: ExcelProcessingUpdate,
 ): ExtractedDocument {
   if (document.extractionMethod !== 'local-excel') {
     throw new TypeError('Manual Excel header rows require a locally extracted workbook.');
   }
-
-  const byBlockId = new Map<string, ExcelHeaderRowUpdate>();
-  for (const update of updates) {
-    if (byBlockId.has(update.blockId)) {
-      throw new RangeError(`Duplicate Excel sheet block: ${update.blockId}`);
-    }
-    byBlockId.set(update.blockId, update);
+  if (update.formulaOutput !== 'value-only' && update.formulaOutput !== 'value-and-formula') {
+    throw new TypeError('Excel formula output must be value-only or value-and-formula.');
   }
 
-  for (const update of updates) {
-    const block = document.blocks.find((candidate) => candidate.id === update.blockId);
+  const byBlockId = new Map<string, ExcelHeaderRowUpdate>();
+  for (const headerUpdate of update.headerRows) {
+    if (byBlockId.has(headerUpdate.blockId)) {
+      throw new RangeError(`Duplicate Excel sheet block: ${headerUpdate.blockId}`);
+    }
+    byBlockId.set(headerUpdate.blockId, headerUpdate);
+  }
+
+  for (const headerUpdate of update.headerRows) {
+    const block = document.blocks.find((candidate) => candidate.id === headerUpdate.blockId);
     const layout = block?.excelLayout;
     if (!block || block.kind !== 'table' || !layout) {
-      throw new RangeError(`Excel sheet block was not found: ${update.blockId}`);
+      throw new RangeError(`Excel sheet block was not found: ${headerUpdate.blockId}`);
     }
     const { startRow: minimumRow, endRow: maximumRow } = layout.usedRange;
     if (
-      !Number.isInteger(update.startRow)
-      || !Number.isInteger(update.endRow)
-      || update.startRow > update.endRow
-      || update.startRow < minimumRow
-      || update.endRow > maximumRow
+      !Number.isInteger(headerUpdate.startRow)
+      || !Number.isInteger(headerUpdate.endRow)
+      || headerUpdate.startRow > headerUpdate.endRow
+      || headerUpdate.startRow < minimumRow
+      || headerUpdate.endRow > maximumRow
     ) {
       throw new RangeError(
         `Excel header row range must stay between ${minimumRow} and ${maximumRow}, with start before end.`,
@@ -77,19 +92,31 @@ export function applyManualExcelHeaderRows(
   return {
     ...document,
     blocks: document.blocks.map((block) => {
-      const update = byBlockId.get(block.id);
-      if (!update || !block.excelLayout) return block;
+      const headerUpdate = byBlockId.get(block.id);
+      if (!headerUpdate || !block.excelLayout) return block;
       return {
         ...block,
         excelLayout: {
           usedRange: { ...block.excelLayout.usedRange },
           headerRows: {
-            startRow: update.startRow,
-            endRow: update.endRow,
+            startRow: headerUpdate.startRow,
+            endRow: headerUpdate.endRow,
             source: 'manual',
           },
         },
       };
     }),
+    excelOptions: { formulaOutput: update.formulaOutput },
   };
+}
+
+/** Backward-compatible wrapper for callers that only change header rows. */
+export function applyManualExcelHeaderRows(
+  document: ExtractedDocument,
+  updates: ExcelHeaderRowUpdate[],
+): ExtractedDocument {
+  return applyExcelProcessingSettings(document, {
+    headerRows: updates,
+    formulaOutput: getExcelFormulaOutput(document),
+  });
 }

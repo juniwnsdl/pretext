@@ -13,8 +13,17 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import type { ExcelFormulaOutput } from '@/lib/preprocessing/contracts';
 import type {
   ExcelHeaderRowUpdate,
+  ExcelProcessingUpdate,
   ExcelSheetSetting,
 } from '@/lib/excel-layout-settings';
 
@@ -22,8 +31,9 @@ interface ExcelSettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settings: ExcelSheetSetting[];
+  formulaOutput: ExcelFormulaOutput;
   processing: boolean;
-  onApply: (updates: ExcelHeaderRowUpdate[]) => Promise<void>;
+  onApply: (update: ExcelProcessingUpdate) => Promise<void>;
 }
 
 interface DraftRange {
@@ -41,10 +51,12 @@ export function ExcelSettingsDialog({
   open,
   onOpenChange,
   settings,
+  formulaOutput,
   processing,
   onApply,
 }: ExcelSettingsDialogProps) {
   const [drafts, setDrafts] = useState<Record<string, DraftRange>>({});
+  const [draftFormulaOutput, setDraftFormulaOutput] = useState<ExcelFormulaOutput>('value-only');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,8 +65,9 @@ export function ExcelSettingsDialog({
       setting.blockId,
       { startRow: String(setting.startRow), endRow: String(setting.endRow) },
     ])));
+    setDraftFormulaOutput(formulaOutput);
     setValidationError(null);
-  }, [open, settings]);
+  }, [formulaOutput, open, settings]);
 
   const updateDraft = (blockId: string, field: keyof DraftRange, value: string) => {
     setDrafts((current) => ({
@@ -90,7 +103,7 @@ export function ExcelSettingsDialog({
 
     setValidationError(null);
     onOpenChange(false);
-    await onApply(updates);
+    await onApply({ headerRows: updates, formulaOutput: draftFormulaOutput });
   };
 
   return (
@@ -98,9 +111,9 @@ export function ExcelSettingsDialog({
       <DialogContent className="sm:max-w-xl">
         <form onSubmit={handleSubmit} className="space-y-5">
           <DialogHeader>
-            <DialogTitle>엑셀 머리행 수정</DialogTitle>
+            <DialogTitle>엑셀 처리 설정</DialogTitle>
             <DialogDescription>
-              자동 감지 결과가 실제 열 제목과 다를 때만 수정하세요. 입력한 범위로 결과를 다시 만듭니다.
+              머리행 범위와 수식 출력 방식을 확인한 뒤 이 설정으로 결과를 다시 만듭니다.
             </DialogDescription>
           </DialogHeader>
 
@@ -154,6 +167,27 @@ export function ExcelSettingsDialog({
                 </section>
               );
             })}
+
+            <section className="space-y-3 rounded-lg border p-4">
+              <div>
+                <Label htmlFor="excel-formula-output">수식 출력</Label>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  엑셀에 저장된 표시값을 사용하며 수식을 다시 계산하지 않습니다.
+                </p>
+              </div>
+              <Select
+                value={draftFormulaOutput}
+                onValueChange={(value) => setDraftFormulaOutput(value as ExcelFormulaOutput)}
+              >
+                <SelectTrigger id="excel-formula-output" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="value-only">표시값만</SelectItem>
+                  <SelectItem value="value-and-formula">표시값 + 수식</SelectItem>
+                </SelectContent>
+              </Select>
+            </section>
           </div>
 
           {validationError && (

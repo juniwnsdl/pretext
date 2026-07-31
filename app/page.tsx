@@ -58,7 +58,10 @@ import { getUploadPreprocessLimitGuidance } from '@/lib/preprocess-limits';
 import {
   MISO_SEPARATOR,
 } from '@/lib/preprocessing/contracts';
-import { getExcelSheetSettings } from '@/lib/excel-layout-settings';
+import {
+  getExcelFormulaOutput,
+  getExcelSheetSettings,
+} from '@/lib/excel-layout-settings';
 
 // ReactMarkdown 플러그인: 모든 요소에 data-source-pos 속성을 주입하여 원본 위치 추적
 const addSourcePosPlugin = () => {
@@ -159,6 +162,7 @@ export default function Home() {
     () => getExcelSheetSettings(sourceDocument),
     [sourceDocument],
   );
+  const excelFormulaOutput = getExcelFormulaOutput(sourceDocument);
 
   // 에러 발생 시 Toast 알림
   useEffect(() => {
@@ -784,7 +788,7 @@ export default function Home() {
                       <Label htmlFor="doc-excel" className="flex-1 cursor-pointer font-normal">
                         <span className="block font-medium">엑셀·내부 데이터</span>
                         <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                          시트와 머리행을 감지해 표 영역별로 나누며 머리행을 직접 수정할 수 있습니다
+                          시트와 머리행을 감지해 표 영역별로 나누며 머리행과 수식 출력을 직접 설정할 수 있습니다
                         </span>
                       </Label>
                     </div>
@@ -979,6 +983,7 @@ export default function Home() {
           open={isExcelSettingsOpen}
           onOpenChange={setIsExcelSettingsOpen}
           settings={excelSheetSettings}
+          formulaOutput={excelFormulaOutput}
           processing={status === 'processing'}
           onApply={reprocessExcel}
         />

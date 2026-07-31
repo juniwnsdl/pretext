@@ -18,10 +18,20 @@ function sheetWidth(sheet: XLSX.WorkSheet): number {
   return range.e.c - range.s.c + 1;
 }
 
-function sheetRowRange(sheet: XLSX.WorkSheet): { startRow: number; endRow: number } | null {
+function sheetUsedRange(sheet: XLSX.WorkSheet): {
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
+} | null {
   if (!sheet['!ref']) return null;
   const range = XLSX.utils.decode_range(sheet['!ref']);
-  return { startRow: range.s.r + 1, endRow: range.e.r + 1 };
+  return {
+    startRow: range.s.r + 1,
+    endRow: range.e.r + 1,
+    startColumn: range.s.c + 1,
+    endColumn: range.e.c + 1,
+  };
 }
 
 function printTitleRows(
@@ -46,8 +56,48 @@ function printTitleRows(
 
 function detectedHeaderRows(
   rows: string[][],
-  usedRange: { startRow: number; endRow: number },
+  usedRange: { startRow: number; endRow: number; startColumn?: number },
+  merges: NonNullable<DocumentBlock['merges']>,
 ): { startRow: number; endRow: number; source: 'detected' } | null {
+  const usedStartRow = usedRange.startRow - 1;
+  const horizontalMerges = merges
+    .filter((merge) =>
+      merge.end.column > merge.start.column
+        && merge.start.row >= usedStartRow
+        && merge.start.row < usedStartRow + Math.min(rows.length, 20),
+    )
+    .sort((left, right) => left.start.row - right.start.row);
+  for (const horizontalMerge of horizontalMerges) {
+    const bandStart = horizontalMerge.start.row;
+    const bandStartIndex = bandStart - usedStartRow;
+    if (rows.slice(0, bandStartIndex).some((row) =>
+      row.filter((cell) => cell.trim().length > 0).length >= 2,
+    )) {
+      continue;
+    }
+    const bandMerges = merges.filter((merge) => merge.start.row === bandStart);
+    let bandEnd = Math.max(...bandMerges.map((merge) => merge.end.row));
+    let bottomRelativeIndex = bandEnd - usedStartRow;
+    if (
+      bandEnd === bandStart
+      && rows[bottomRelativeIndex + 1]?.filter((cell) => cell.trim().length > 0).length >= 2
+    ) {
+      bandEnd += 1;
+      bottomRelativeIndex += 1;
+    }
+    const bottomPopulated = rows[bottomRelativeIndex]
+      ?.filter((cell) => cell.trim().length > 0).length ?? 0;
+    const usedStartColumn = (usedRange.startColumn ?? 1) - 1;
+    const childStartColumn = horizontalMerge.start.column - usedStartColumn;
+    const childEndColumn = horizontalMerge.end.column - usedStartColumn;
+    const childLabels = rows[bottomRelativeIndex]
+      ?.slice(childStartColumn, childEndColumn + 1)
+      .filter((cell) => cell.trim().length > 0).length ?? 0;
+    if (bandEnd > bandStart && bottomPopulated >= 2 && childLabels >= 2) {
+      return { startRow: bandStart + 1, endRow: bandEnd + 1, source: 'detected' };
+    }
+  }
+
   const candidates = rows.slice(0, 20).map((row, index) => ({
     index,
     populatedCells: row.filter((cell) => cell.trim().length > 0).length,
@@ -105,24 +155,51 @@ function sheetMerges(sheet: XLSX.WorkSheet): NonNullable<DocumentBlock['merges']
   }));
 }
 
+export function extractSheetFormulaCells(
+  sheet: XLSX.WorkSheet,
+): NonNullable<DocumentBlock['formulaCells']> {
+  const formulaCells: NonNullable<DocumentBlock['formulaCells']> = [];
+  for (const address of Object.keys(sheet)) {
+    if (address.startsWith('!')) continue;
+    const cell = sheet[address] as XLSX.CellObject | undefined;
+    if (!cell || typeof cell.f !== 'string' || cell.f.length === 0) continue;
+    const coordinate = XLSX.utils.decode_cell(address);
+    formulaCells.push({
+      row: coordinate.r + 1,
+      column: coordinate.c + 1,
+      formula: cell.f.startsWith('=') ? cell.f : `=${cell.f}`,
+      hasStoredResult: cell.v !== undefined && cell.v !== null,
+    });
+  }
+  return formulaCells.sort((left, right) => left.row - right.row || left.column - right.column);
+}
+
 /** Extracts one structured table block per non-empty workbook sheet. */
 export function extractWorkbookDocument(
   buffer: ArrayBuffer,
   fileName: string,
 ): ExtractedDocument {
-  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, cellFormula: true });
   const blocks: DocumentBlock[] = [];
   const warnings: PreprocessIssue[] = [];
+  const missingFormulaResultLocations: string[] = [];
 
   workbook.SheetNames.forEach((sheetName, sheetIndex) => {
     const sheet = workbook.Sheets[sheetName];
     if (!sheet) return;
     const rows = displayedRows(sheet);
-    if (!hasContent(rows)) return;
+    const formulaCells = extractSheetFormulaCells(sheet);
+    if (!hasContent(rows) && formulaCells.length === 0) return;
     const merges = sheetMerges(sheet);
-    const usedRange = sheetRowRange(sheet);
+    const usedRange = sheetUsedRange(sheet);
     const headerRows = usedRange
-      ? printTitleRows(workbook, sheetIndex) ?? detectedHeaderRows(rows, usedRange)
+      ? printTitleRows(workbook, sheetIndex)
+        ?? detectedHeaderRows(rows, usedRange, merges)
+        ?? (formulaCells[0] ? {
+          startRow: formulaCells[0].row,
+          endRow: formulaCells[0].row,
+          source: 'detected' as const,
+        } : null)
       : null;
     const blockNumber = blocks.length + 1;
 
@@ -138,6 +215,7 @@ export function extractWorkbookDocument(
         excelLayout: { usedRange, headerRows },
       } : {}),
       ...(merges.length > 0 ? { merges } : {}),
+      ...(formulaCells.length > 0 ? { formulaCells } : {}),
     });
 
     if (merges.length > 0) {
@@ -149,7 +227,21 @@ export function extractWorkbookDocument(
         locations: merges.map((merge) => `${sheetName}!${merge.range}`),
       });
     }
+    const missingFormulaResults = formulaCells.filter((cell) => !cell.hasStoredResult);
+    missingFormulaResultLocations.push(...missingFormulaResults.map((cell) =>
+      `${sheetName}!${XLSX.utils.encode_cell({ r: cell.row - 1, c: cell.column - 1 })}`,
+    ));
   });
+
+  if (missingFormulaResultLocations.length > 0) {
+    warnings.push({
+      code: 'FORMULA_RESULT_MISSING',
+      severity: 'warning',
+      message: '저장된 결과가 없는 수식 셀이 있습니다. 이 앱은 수식을 다시 계산하지 않으므로 원본 Excel에서 확인하세요.',
+      count: missingFormulaResultLocations.length,
+      locations: missingFormulaResultLocations,
+    });
+  }
 
   if (blocks.length === 0) {
     throw new Error('워크북이 비어 있거나 처리할 수 있는 내용이 없습니다.');
@@ -162,5 +254,6 @@ export function extractWorkbookDocument(
     extractionMethod: 'local-excel',
     blocks,
     warnings,
+    excelOptions: { formulaOutput: 'value-only' },
   };
 }

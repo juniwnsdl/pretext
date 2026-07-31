@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   DOCUMENT_HANDLING_SECURITY_NOTICE,
   DOCUMENT_HANDLING_STAGES,
+  TABLE_HANDLING_GUIDANCE,
 } from '@/lib/document-handling-guide';
 import {
   getFileProcessingDisclosure,
@@ -83,7 +84,7 @@ const documentTypes = [
   {
     name: '엑셀·내부 데이터',
     selection: '행과 열로 구성된 표 데이터나 여러 시트가 있는 통합문서',
-    rules: '시트와 빈 행으로 구분된 표 영역을 섞지 않습니다. 저장된 반복 머리행을 우선 사용하고, 없으면 자동 감지하며, 머리행 범위를 직접 수정할 수 있습니다.',
+    rules: '시트와 빈 행으로 구분된 표 영역을 섞지 않습니다. 저장된 반복 머리행을 우선 사용하고, 없으면 자동 감지하며, 머리행 범위와 수식 출력 여부를 직접 수정할 수 있습니다.',
   },
   {
     name: '설명서·업무 매뉴얼',
@@ -259,6 +260,20 @@ function HandlingGuide() {
             </li>
           ))}
         </ol>
+
+        <section className="rounded-lg border bg-muted/30 p-4">
+          <h3 className="font-semibold">표가 있는 문서는 이렇게 확인하세요</h3>
+          <div className="mt-3 grid gap-3 lg:grid-cols-3">
+            {TABLE_HANDLING_GUIDANCE.map((item) => (
+              <div key={item.title} className="rounded-md bg-background p-3">
+                <p className="text-sm font-medium">{item.title}</p>
+                <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                  {item.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <div className="rounded-lg bg-primary/10 px-4 py-3 text-sm leading-6">
           <p className="font-semibold">기억하세요</p>
