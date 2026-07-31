@@ -47,6 +47,7 @@ import { Switch } from '@/components/ui/switch';
 import { ProgressStepper } from '@/components/progress-stepper';
 import { UsageGuide } from '@/components/usage-guide';
 import { LawSearchPanel } from '@/components/law-search-panel';
+import { PreprocessResultSummary } from '@/components/preprocess-result-summary';
 
 import { useFileProcessor } from '@/hooks/useFileProcessor';
 import {
@@ -909,6 +910,7 @@ export default function Home() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                {result && <PreprocessResultSummary result={result} />}
                 {!isEditMode && showChunkFlow && isVisualizationReady ? (
                   <div className="h-[600px] rounded-lg border overflow-hidden">
                     <ChunkFlowViewer chunks={processedChunks} onChunkUpdate={updateChunks} />
