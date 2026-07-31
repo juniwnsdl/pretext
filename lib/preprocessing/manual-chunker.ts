@@ -49,6 +49,7 @@ interface ManualSection {
 const safetyLabel = /^(?:\[\s*(?:주의|경고|위험|안전|중요|필독)\s*\]|(?:주의|경고|위험|안전|중요|필독)\s*[:：]|※)/u;
 const numberedPrefix = /^\s*(?:\d+\.\s+|\d+\)\s+|\d+-\d+\s+|\d+\s+|[가-힣]\)\s+|[①-⑳]\s*|Step\s*\d+(?:\s*[:.)-])?\s+|단계\s*\d+(?:\s*[:.)-])?\s+)/iu;
 const imperativeEnding = /(?:다|시오|세요)\.\s*$/u;
+const dotlessSentenceEnding = /(?:한다|하시오|하십시오|하세요|합니다|됩니다|이다|있습니다|없습니다)\s*$/u;
 const safetyCommandEnding = /(?:금지|(?:작업|운전|작동)\s*중지)(?:한다|합니다|하시오|하십시오)?\s*[).]?\s*$/u;
 const knownSectionTitle = /^(?:(?:작업\s*)?개요|목적|범위|준비(?:\s*사항)?|절차|작업\s*절차|점검(?:\s*사항)?|기동|운전|종료|주의(?:\s*사항)?|안전\s*수칙)(?:입니다)?\.?\s*$/u;
 
@@ -279,6 +280,7 @@ function parseDottedManualHeading(line: string): DottedManualHeading | null {
     !title ||
     title.length > 80 ||
     imperativeEnding.test(trimmed) ||
+    dotlessSentenceEnding.test(title) ||
     /[.!?]\s*$/u.test(title)
   ) {
     return null;
@@ -491,7 +493,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
           current.warnings.push({
             code: 'manual-deep-numbering-unstructured',
             severity: 'warning',
-            message: 'A dotted manual heading has no observed direct parent.',
+            message: '번호 계층의 직접 부모를 확인할 수 없습니다. 원문은 본문으로 보존했으니 전처리 결과를 확인하세요.',
             locations: [block.id],
           });
           orphanDottedNumberingWarned = true;
