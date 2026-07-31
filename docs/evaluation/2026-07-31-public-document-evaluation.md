@@ -22,8 +22,8 @@
 
 | 구분 | 공식 공개 출처 | 확인에 사용한 관점 |
 | --- | --- | --- |
-| 업무 매뉴얼 | [대구광역시 사회복지시설 운영 매뉴얼](https://www.daegu.go.kr/cmsh/daegu.go.kr/welf/file/Social_welfare_manual.pdf), [해양수산부 안전·보건 적용 매뉴얼](https://www.mof.go.kr/doc/ko/selectDoc.do?bbsSeq=22&docSeq=67518&menuSeq=851), [교육부 학교민원 처리 매뉴얼](https://www.moe.go.kr/boardCnts/view.do?boardID=327&boardSeq=105493&lev=0&m=0305&opType=N&page=1&s=moe&searchType=null) | 번호형 제목, 단계·표·주의 문구가 섞인 매뉴얼 패턴 |
-| 일반 공개 문서 | [위택스](https://www.wetax.go.kr/), [기업마당](https://www.bizinfo.go.kr/), [우주항공청](https://www.kasa.go.kr/) | 공고·안내·서식처럼 제목·번호·표가 공존하는 일반 문서 패턴 |
+| 업무 매뉴얼 | [대구광역시 홈페이지 매뉴얼](https://car.daegu.go.kr/resources/manual/manual_homepage.pdf), [해양수산부 공개 매뉴얼](https://www.mof.go.kr/jfile/readDownloadFile.do?fileType=MOF_ARTICLE&fileTypeSeq=21392&fileNum=1), [위택스 자동차세 연세액납부 신청 사용자 매뉴얼](https://cdn.wetax.go.kr/static/guide/03%20%EC%8B%A0%EC%B2%AD/02_%EC%82%AC%EC%9A%A9%EC%9E%90%EB%A7%A4%EB%89%B4%EC%96%BC_%EC%8B%A0%EC%B2%AD_%EC%9E%90%EB%8F%99%EC%B0%A8%EC%84%B8%20%EC%97%B0%EC%84%B8%EC%95%A1%EB%82%A9%EB%B6%80%20%EC%8B%A0%EC%B2%AD.pdf) | 직접 확인한 `1 > 1.1 > 1.1.1` 숫자 부모 패턴 |
+| 일반 공개 문서 | [기업마당 공개 문서](https://bizinfo.go.kr/cmm/fms/fileDown.do?atchFileId=FILE_000000000755132&fileSn=4), [우주항공청 공개 문서](https://www.kasa.go.kr/cmm/fms/FileDown.do?atchFileId=FILE_000000003911Sd8&fileSn=1), [교육부 공개 문서](https://www.moe.go.kr/boardCnts/fileDown.do?m=0303&s=moe&fileSeq=4023ebfa6f2170d8c33f49cfbe21f045) | 엄격한 로마 대제목 > 현재 번호 제목의 2단계 패턴 |
 | Excel 구조 메타데이터 | [SheetJS 댓글·메모 문서](https://docs.sheetjs.com/docs/csf/features/comments/), [SheetJS 수식 문서](https://docs.sheetjs.com/docs/csf/features/formulae/) | 셀 댓글 배열과 수식 메타데이터의 보수적 처리 경계 |
 
 평가 자료는 기능의 범위를 확인하기 위한 최소 참고 자료다. 변환기·뷰어가 평탄화한 PDF 표나 원본에 저장되지 않은 수식 계산 결과는 이 확인만으로 복원할 수 없다.
