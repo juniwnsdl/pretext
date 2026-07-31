@@ -505,7 +505,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
         if (!confirmed) appendRawLine(current, line, block.id);
       } else if (!structuredPath && !demotedSectionLines.has(index) && hasDottedManualHeadingPrefix(line)) {
         appendRawLine(current, line, block.id);
-      } else if (classifyManualLine(line) === 'section' && !demotedSectionLines.has(index)) {
+      } else if (!structuredPath && classifyManualLine(line) === 'section' && !demotedSectionLines.has(index)) {
         resetDottedHeadingStack();
         startSection([line.trim()], [block.id]);
       } else if (demotedSectionLines.has(index)) {

@@ -318,7 +318,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
     pendingHeadingSourceIds = [];
   };
 
-  const acceptLines = (lines: string[], sourceId: string): void => {
+  const acceptLines = (lines: string[], sourceId: string, inferHeadings: boolean = true): void => {
     const demotedNumberedLines = demotedNumberedLineIndexes(lines);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
@@ -337,7 +337,9 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
         continue;
       }
 
-      const heading = parseGeneralHeading(line, activeHeadingKind === 'article');
+      const heading = inferHeadings
+        ? parseGeneralHeading(line, activeHeadingKind === 'article')
+        : null;
       if (heading && !(heading.kind === 'numbered' && demotedNumberedLines.has(index))) {
         acceptHeading(heading, sourceId);
       } else {
@@ -370,7 +372,8 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       continue;
     }
 
-    if (block.headingPath.length > 0) changeStructuredPath(block.headingPath);
+    const hasExplicitPath = block.headingPath.length > 0;
+    if (hasExplicitPath) changeStructuredPath(block.headingPath);
     if (block.kind === 'table') {
       claimRomanParentForBody();
       if (bodyLines.some((entry) => entry.text.trim().length > 0)) flushText();
@@ -386,7 +389,11 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
     }
 
     if (block.kind === 'raw-text') {
-      acceptLines((block.text ?? '').replace(/\r\n?/gu, '\n').split('\n'), block.id);
+      acceptLines(
+        (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n'),
+        block.id,
+        !hasExplicitPath,
+      );
     } else if (block.kind === 'list-item') {
       // Word numbering-styled section headings arrive as top-level ordered
       // list items ("GENERAL", "PIPING DESIGN"); Hangul lines never qualify.
@@ -401,7 +408,9 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       // (multi-level numbering, English capitals/structural titles) promote,
       // so single-level Korean list paragraphs stay body text.
       for (const text of (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n')) {
-        const heading = parseGeneralHeading(text, activeHeadingKind === 'article');
+        const heading = hasExplicitPath
+          ? null
+          : parseGeneralHeading(text, activeHeadingKind === 'article');
         const unambiguous = heading && (
           heading.kind === 'markdown' ||
           heading.kind === 'article' ||
