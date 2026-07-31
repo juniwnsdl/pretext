@@ -119,7 +119,7 @@
 
 ## 검증 기록
 
-- 전체 자동 테스트: **246/246 통과**
+- 전체 자동 테스트: **249/249 통과**
 - TypeScript: `pnpm exec tsc --noEmit --incremental false` 통과
 - 배포 빌드: `pnpm run build` 통과
 - 실제 화면: 도움말 문구, 엑셀 설정 대화상자, `표시값 + 수식` 선택 후 공개 자산 Excel의 수식 셀 13개 표시 확인
