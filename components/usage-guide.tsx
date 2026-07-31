@@ -262,7 +262,7 @@ function HandlingGuide() {
         </ol>
 
         <section className="rounded-lg border bg-muted/30 p-4">
-          <h3 className="font-semibold">표가 있는 문서는 이렇게 확인하세요</h3>
+          <h3 className="font-semibold">문서 구조는 이렇게 확인하세요</h3>
           <div className="mt-3 grid gap-3 lg:grid-cols-3">
             {TABLE_HANDLING_GUIDANCE.map((item) => (
               <div key={item.title} className="rounded-md bg-background p-3">
