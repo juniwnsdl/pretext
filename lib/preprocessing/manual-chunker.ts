@@ -49,7 +49,7 @@ interface ManualSection {
 const safetyLabel = /^(?:\[\s*(?:주의|경고|위험|안전|중요|필독)\s*\]|(?:주의|경고|위험|안전|중요|필독)\s*[:：]|※)/u;
 const numberedPrefix = /^\s*(?:\d+\.\s+|\d+\)\s+|\d+-\d+\s+|\d+\s+|[가-힣]\)\s+|[①-⑳]\s*|Step\s*\d+(?:\s*[:.)-])?\s+|단계\s*\d+(?:\s*[:.)-])?\s+)/iu;
 const imperativeEnding = /(?:다|시오|세요)\.\s*$/u;
-const dotlessSentenceEnding = /(?:한다|하시오|하십시오|하세요|합니다|됩니다|이다|있습니다|없습니다)\s*$/u;
+const dotlessSentenceEnding = /(?:한다|했다|하시오|하십시오|하세요|합니다|됩니다|이다|있습니다|없습니다|할\s+것|해야\s+함|바람|요망)\s*$/u;
 const safetyCommandEnding = /(?:금지|(?:작업|운전|작동)\s*중지)(?:한다|합니다|하시오|하십시오)?\s*[).]?\s*$/u;
 const knownSectionTitle = /^(?:(?:작업\s*)?개요|목적|범위|준비(?:\s*사항)?|절차|작업\s*절차|점검(?:\s*사항)?|기동|운전|종료|주의(?:\s*사항)?|안전\s*수칙)(?:입니다)?\.?\s*$/u;
 
@@ -293,6 +293,10 @@ function parseDottedManualHeading(line: string): DottedManualHeading | null {
   };
 }
 
+function hasDottedManualHeadingPrefix(line: string): boolean {
+  return /^\s*\d+(?:\.\d+){0,3}\.?\s+\S/u.test(line);
+}
+
 /** Reads the ordinal marker of a numbered line so sibling runs can be detected. */
 function sectionLineOrdinal(line: string): SectionOrdinal | null {
   const trimmed = line.trim();
@@ -499,6 +503,8 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
           orphanDottedNumberingWarned = true;
         }
         if (!confirmed) appendRawLine(current, line, block.id);
+      } else if (!structuredPath && !demotedSectionLines.has(index) && hasDottedManualHeadingPrefix(line)) {
+        appendRawLine(current, line, block.id);
       } else if (classifyManualLine(line) === 'section' && !demotedSectionLines.has(index)) {
         resetDottedHeadingStack();
         startSection([line.trim()], [block.id]);
