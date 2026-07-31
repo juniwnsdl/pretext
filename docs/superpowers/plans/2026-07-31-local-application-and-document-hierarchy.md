@@ -263,4 +263,3 @@ Confirm the base branch is `master`, merge `codex/public-document-preprocessing`
 - [ ] **Step 5: Report integration state**
 
 Report the merge commit/fast-forward head, local path, verification counts, remaining unsupported cases, and whether the isolated worktree remains or was cleaned up.
-
