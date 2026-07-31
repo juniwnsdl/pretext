@@ -23,7 +23,7 @@ import {
 interface GeneralHeading {
   text: string;
   inlineBody: string;
-  kind: 'markdown' | 'numbered' | 'structural' | 'article';
+  kind: 'markdown' | 'numbered' | 'structural' | 'article' | 'roman-parent';
 }
 
 interface TextUnit {
@@ -126,7 +126,10 @@ function parseGeneralHeading(line: string, insideArticle: boolean): GeneralHeadi
   if (/^제\s*\d+\s*(?:편|장|절|관)(?:\s+\S.*)?$/u.test(value) && !isSentenceLikeTitle(value)) {
     return { text: value, inlineBody: '', kind: 'structural' };
   }
-  if (!insideArticle && (isRomanStructuralHeading(value) || isNumberedFormHeading(value))) {
+  if (!insideArticle && isRomanStructuralHeading(value)) {
+    return { text: value, inlineBody: '', kind: 'roman-parent' };
+  }
+  if (!insideArticle && isNumberedFormHeading(value)) {
     return { text: value, inlineBody: '', kind: 'structural' };
   }
   // Circled numbers (①) and single-syllable markers (가., 나)) are list or
@@ -209,6 +212,8 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
   const listOrdinals = orderedListOrdinals(document.blocks);
   let activePath: string[] = [];
   let activeHeadingKind: GeneralHeading['kind'] | null = null;
+  let activeRomanParent: string | null = null;
+  let unclaimedRomanParentSourceIds: string[] = [];
   let pendingHeadingSourceIds: string[] = [];
   let bodyLines: Array<{ text: string; sourceId: string }> = [];
   let tableIndex = 0;
@@ -230,7 +235,32 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
     pendingHeadingSourceIds = [];
   };
 
+  const releaseRomanParent = (): string[] => {
+    const sourceIds = unclaimedRomanParentSourceIds;
+    activeRomanParent = null;
+    unclaimedRomanParentSourceIds = [];
+    return sourceIds;
+  };
+
+  const claimRomanParentForBody = (): void => {
+    if (activeRomanParent === null || activePath.length !== 1) return;
+    pendingHeadingSourceIds = unique([
+      ...pendingHeadingSourceIds,
+      ...unclaimedRomanParentSourceIds,
+    ]);
+    unclaimedRomanParentSourceIds = [];
+  };
+
+  const appendBodyLine = (text: string, sourceId: string): void => {
+    claimRomanParentForBody();
+    bodyLines.push({ text, sourceId });
+  };
+
   const changeStructuredPath = (path: string[]): void => {
+    pendingHeadingSourceIds = unique([
+      ...pendingHeadingSourceIds,
+      ...releaseRomanParent(),
+    ]);
     if (samePath(activePath, path)) return;
     flushText();
     activePath = [...path];
@@ -239,13 +269,35 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
 
   const acceptHeading = (heading: GeneralHeading, sourceId: string): void => {
     flushText();
+    if (heading.kind === 'roman-parent') {
+      const replacedParentSourceIds = releaseRomanParent();
+      activePath = [heading.text];
+      activeHeadingKind = heading.kind;
+      activeRomanParent = heading.text;
+      unclaimedRomanParentSourceIds = unique([...replacedParentSourceIds, sourceId]);
+      return;
+    }
+    if (heading.kind === 'numbered' && activeRomanParent !== null) {
+      activePath = [activeRomanParent, heading.text];
+      activeHeadingKind = heading.kind;
+      pendingHeadingSourceIds = unique([
+        ...pendingHeadingSourceIds,
+        ...unclaimedRomanParentSourceIds,
+        sourceId,
+      ]);
+      unclaimedRomanParentSourceIds = [];
+      if (heading.inlineBody) appendBodyLine(heading.inlineBody, sourceId);
+      return;
+    }
+    const parentSourceIds = releaseRomanParent();
     activePath = [heading.text];
     activeHeadingKind = heading.kind;
-    pendingHeadingSourceIds = [sourceId];
-    if (heading.inlineBody) bodyLines.push({ text: heading.inlineBody, sourceId });
+    pendingHeadingSourceIds = unique([...parentSourceIds, sourceId]);
+    if (heading.inlineBody) appendBodyLine(heading.inlineBody, sourceId);
   };
 
   const acceptTable = (tableLines: string[], sourceId: string): void => {
+    claimRomanParentForBody();
     if (bodyLines.some((entry) => entry.text.trim().length > 0)) flushText();
     else bodyLines = [];
     const [table] = extractMarkdownTableBlocks(
@@ -253,7 +305,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       `${sourceId}-general-${++tableIndex}`,
     );
     if (!table) {
-      bodyLines.push(...tableLines.map((text) => ({ text, sourceId })));
+      tableLines.forEach((text) => appendBodyLine(text, sourceId));
       return;
     }
     units.push({
@@ -288,7 +340,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       if (heading && !(heading.kind === 'numbered' && demotedNumberedLines.has(index))) {
         acceptHeading(heading, sourceId);
       } else {
-        bodyLines.push({ text: line, sourceId });
+        appendBodyLine(line, sourceId);
       }
     }
   };
@@ -299,21 +351,27 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
     if (block.kind === 'heading') {
       const markdown = stripMarkdownHeading(block.text ?? '') ?? block.text?.trim() ?? '';
       const parsed = parseGeneralHeading(markdown, false);
+      if (block.headingPath.length === 0 && parsed) {
+        acceptHeading(parsed, block.id);
+        continue;
+      }
       const text = parsed?.text ?? markdown;
       const path = block.headingPath.length > 0
         ? [...block.headingPath]
         : [];
       if (text && path.at(-1) !== text) path.push(text);
+      const parentSourceIds = releaseRomanParent();
       flushText();
       activePath = path;
       activeHeadingKind = parsed?.kind ?? 'structural';
-      pendingHeadingSourceIds = hasSource(block) ? [block.id] : [];
-      if (parsed?.inlineBody) bodyLines.push({ text: parsed.inlineBody, sourceId: block.id });
+      pendingHeadingSourceIds = hasSource(block) ? unique([...parentSourceIds, block.id]) : parentSourceIds;
+      if (parsed?.inlineBody) appendBodyLine(parsed.inlineBody, block.id);
       continue;
     }
 
     if (block.headingPath.length > 0) changeStructuredPath(block.headingPath);
     if (block.kind === 'table') {
+      claimRomanParentForBody();
       if (bodyLines.some((entry) => entry.text.trim().length > 0)) flushText();
       else bodyLines = [];
       units.push({
@@ -335,7 +393,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       if ((block.depth ?? 0) === 0 && isEnglishCapsHeading(itemText)) {
         acceptHeading({ text: itemText, inlineBody: '', kind: 'structural' }, block.id);
       } else {
-        bodyLines.push({ text: renderListItem(block, listOrdinals.get(block.id)), sourceId: block.id });
+        appendBodyLine(renderListItem(block, listOrdinals.get(block.id)), block.id);
       }
     } else {
       // Style-less headings inside paragraph blocks: only unambiguous forms
@@ -346,11 +404,12 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
         const unambiguous = heading && (
           heading.kind === 'markdown' ||
           heading.kind === 'article' ||
+          heading.kind === 'roman-parent' ||
           (heading.kind === 'structural') ||
           (heading.kind === 'numbered' && /^\d+\.\d+/u.test(heading.text))
         );
         if (unambiguous) acceptHeading(heading, block.id);
-        else bodyLines.push({ text, sourceId: block.id });
+        else appendBodyLine(text, block.id);
       }
     }
   }
