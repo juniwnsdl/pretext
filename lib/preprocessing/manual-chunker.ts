@@ -256,7 +256,40 @@ interface SectionOrdinal {
   value: number;
 }
 
+interface DottedManualHeading {
+  prefix: string;
+  depth: number;
+  text: string;
+}
+
 const HANGUL_ORDER = '가나다라마바사아자차카타파하';
+
+/**
+ * Deliberately narrower than classifyManualLine: dotted number paths are
+ * inferred only for short heading-like text. Lists and imperative work steps
+ * continue through the existing classifier and list-demotion rules.
+ */
+function parseDottedManualHeading(line: string): DottedManualHeading | null {
+  const trimmed = line.trim();
+  const match = trimmed.match(/^(\d+(?:\.\d+){0,3})\.?\s+(.+?)\s*$/u);
+  if (!match) return null;
+
+  const title = match[2].trim();
+  if (
+    !title ||
+    title.length > 80 ||
+    imperativeEnding.test(trimmed) ||
+    /[.!?]\s*$/u.test(title)
+  ) {
+    return null;
+  }
+
+  return {
+    prefix: match[1],
+    depth: match[1].split('.').length,
+    text: trimmed,
+  };
+}
 
 /** Reads the ordinal marker of a numbered line so sibling runs can be detected. */
 function sectionLineOrdinal(line: string): SectionOrdinal | null {
@@ -324,6 +357,7 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
   const listOrdinals = orderedListOrdinals(document.blocks);
   let current = createSection([]);
   let tableIndex = 0;
+  let activeDottedHeadings: DottedManualHeading[] = [];
 
   const startSection = (path: string[], headingSourceIds: string[] = []): void => {
     appendUnpairedSafety(current);
@@ -333,15 +367,40 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
   const ensurePath = (path: string[]): void => {
     if (!samePath(current.path, path)) startSection(path);
   };
+  const resetDottedHeadingStack = (): void => {
+    activeDottedHeadings = [];
+  };
+  const startConfirmedDottedHeading = (
+    heading: DottedManualHeading,
+    sourceId: string,
+  ): boolean => {
+    if (heading.depth === 1) {
+      activeDottedHeadings = [heading];
+      startSection([heading.text], [sourceId]);
+      return true;
+    }
+
+    const parentPrefix = heading.prefix.split('.').slice(0, -1).join('.');
+    const directParent = activeDottedHeadings[heading.depth - 2];
+    if (!directParent || directParent.prefix !== parentPrefix) return false;
+
+    activeDottedHeadings = [...activeDottedHeadings.slice(0, heading.depth - 1), heading];
+    startSection(activeDottedHeadings.map((entry) => entry.text), [sourceId]);
+    return true;
+  };
 
   for (const block of [...document.blocks].sort((left, right) => left.order - right.order)) {
     if (block.kind === 'heading') {
+      resetDottedHeadingStack();
       startSection(headingPathForBlock(block), [block.id]);
       continue;
     }
 
     if (block.kind === 'table') {
-      if (block.headingPath.length > 0) ensurePath(block.headingPath);
+      if (block.headingPath.length > 0) {
+        resetDottedHeadingStack();
+        ensurePath(block.headingPath);
+      }
       const safety = takePendingSafety(current);
       current.units.push({
         kind: 'table',
@@ -353,7 +412,10 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
     }
 
     if (block.kind === 'paragraph') {
-      if (block.headingPath.length > 0) ensurePath(block.headingPath);
+      if (block.headingPath.length > 0) {
+        resetDottedHeadingStack();
+        ensurePath(block.headingPath);
+      }
       for (const line of (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n')) {
         appendRawLine(current, line, block.id);
       }
@@ -361,7 +423,10 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
     }
 
     if (block.kind === 'list-item') {
-      if (block.headingPath.length > 0) ensurePath(block.headingPath);
+      if (block.headingPath.length > 0) {
+        resetDottedHeadingStack();
+        ensurePath(block.headingPath);
+      }
       const text = block.text ?? '';
       if (safetyLabel.test(text.trim())) {
         appendRawLine(current, text, block.id);
@@ -378,25 +443,16 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
 
     if (block.kind !== 'raw-text') continue;
 
+    const structuredPath = block.headingPath.length > 0;
+    if (structuredPath) {
+      resetDottedHeadingStack();
+      ensurePath(block.headingPath);
+    }
     const lines = (block.text ?? '').replace(/\r\n?/gu, '\n').split('\n');
     const demotedSectionLines = demotedSectionLineIndexes(lines);
-    let deepNumberingWarned = false;
+    let orphanDottedNumberingWarned = false;
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      if (
-        !deepNumberingWarned &&
-        block.headingPath.length === 0 &&
-        line.trim().length <= 120 &&
-        /^\d+(?:\.\d+)+\s+\S/u.test(line.trim())
-      ) {
-        current.warnings.push({
-          code: 'manual-deep-numbering-unstructured',
-          severity: 'warning',
-          message: '깊은 번호 체계(예: 2.1.1)가 감지되었습니다. 원문 계층이 평탄화될 수 있으므로 전처리 결과를 확인하세요.',
-          locations: [block.id],
-        });
-        deepNumberingWarned = true;
-      }
       if (
         isMarkdownTableLine(line) &&
         index + 1 < lines.length &&
@@ -426,7 +482,23 @@ function parseManualSections(document: ExtractedDocument): ManualSection[] {
         continue;
       }
 
-      if (classifyManualLine(line) === 'section' && !demotedSectionLines.has(index)) {
+      const dottedHeading = structuredPath || demotedSectionLines.has(index)
+        ? null
+        : parseDottedManualHeading(line);
+      if (dottedHeading) {
+        const confirmed = startConfirmedDottedHeading(dottedHeading, block.id);
+        if (!confirmed && !orphanDottedNumberingWarned) {
+          current.warnings.push({
+            code: 'manual-deep-numbering-unstructured',
+            severity: 'warning',
+            message: 'A dotted manual heading has no observed direct parent.',
+            locations: [block.id],
+          });
+          orphanDottedNumberingWarned = true;
+        }
+        if (!confirmed) appendRawLine(current, line, block.id);
+      } else if (classifyManualLine(line) === 'section' && !demotedSectionLines.has(index)) {
+        resetDottedHeadingStack();
         startSection([line.trim()], [block.id]);
       } else if (demotedSectionLines.has(index)) {
         appendPendingSafetyToInstruction(current, line, block.id, 'step');
