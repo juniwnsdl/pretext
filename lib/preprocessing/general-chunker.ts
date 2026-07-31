@@ -257,14 +257,15 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
   };
 
   const changeStructuredPath = (path: string[]): void => {
-    pendingHeadingSourceIds = unique([
-      ...pendingHeadingSourceIds,
-      ...releaseRomanParent(),
-    ]);
-    if (samePath(activePath, path)) return;
+    const parentSourceIds = releaseRomanParent();
+    if (samePath(activePath, path)) {
+      pendingHeadingSourceIds = unique([...pendingHeadingSourceIds, ...parentSourceIds]);
+      return;
+    }
     flushText();
     activePath = [...path];
     activeHeadingKind = null;
+    pendingHeadingSourceIds = parentSourceIds;
   };
 
   const acceptHeading = (heading: GeneralHeading, sourceId: string): void => {
@@ -351,7 +352,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
     if (block.kind === 'heading') {
       const markdown = stripMarkdownHeading(block.text ?? '') ?? block.text?.trim() ?? '';
       const parsed = parseGeneralHeading(markdown, false);
-      if (block.headingPath.length === 0 && parsed) {
+      if (block.headingPath.length === 0 && parsed && parsed.kind !== 'roman-parent') {
         acceptHeading(parsed, block.id);
         continue;
       }
@@ -363,7 +364,7 @@ function parseGeneralUnits(document: ExtractedDocument): GeneralUnit[] {
       const parentSourceIds = releaseRomanParent();
       flushText();
       activePath = path;
-      activeHeadingKind = parsed?.kind ?? 'structural';
+      activeHeadingKind = parsed?.kind === 'article' ? 'article' : 'structural';
       pendingHeadingSourceIds = hasSource(block) ? unique([...parentSourceIds, block.id]) : parentSourceIds;
       if (parsed?.inlineBody) appendBodyLine(parsed.inlineBody, block.id);
       continue;
