@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Loader2,
   SlidersHorizontal,
+  Undo2,
 } from 'lucide-react';
 import {
   RadioGroup,
@@ -126,6 +127,8 @@ export default function Home() {
     setInputText,
     setDocType,
     updateChunks,
+    undoChunks,
+    canUndo,
     reset,
     handleFileRead,
     handleLawRead,
@@ -175,6 +178,30 @@ export default function Home() {
       prevErrorRef.current = error;
     }
   }, [error]);
+
+  // Ctrl+Z(⌘+Z)로 청크 수정 되돌리기 (결과 검토 탭, 편집 모드 아님, 입력 요소 포커스 아님)
+  useEffect(() => {
+    if (activeTab !== 'output' || isEditMode || !canUndo) return;
+
+    const handleUndoShortcut = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== 'z') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (
+        target.tagName === 'INPUT'
+        || target.tagName === 'TEXTAREA'
+        || target.isContentEditable
+      )) return;
+      e.preventDefault();
+      undoChunks();
+      toast.success('되돌리기 완료', {
+        description: '청크가 이전 상태로 복원되었습니다.',
+      });
+    };
+
+    window.addEventListener('keydown', handleUndoShortcut);
+    return () => window.removeEventListener('keydown', handleUndoShortcut);
+  }, [activeTab, canUndo, isEditMode, undoChunks]);
 
   // Preview 모드로 전환될 때 스크롤 위치 복원
   useEffect(() => {
@@ -852,9 +879,9 @@ export default function Home() {
                   <div>
                     <CardTitle>전처리 결과</CardTitle>
                     <CardDescription className="mt-1.5">
-                      {isEditMode 
-                        ? '텍스트를 수정하고 저장 버튼을 클릭하세요' 
-                        : '시각화로 결과를 확인하고 필요하면 수정하세요. 아래 청크 사이의 구분선을 위아래로 드래그하면 두 청크 사이의 내용 경계를 조정할 수 있습니다.'}
+                      {isEditMode
+                        ? '텍스트를 수정하고 저장 버튼을 클릭하세요'
+                        : '시각화로 결과를 확인하고 필요하면 수정하세요. 청크 사이 구분선을 드래그하면 문단·표 블록 단위로 경계가 이동하고, 끝까지 밀면 두 청크가 병합됩니다.'}
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-3">
@@ -871,6 +898,22 @@ export default function Home() {
                     )}
                     {!isEditMode ? (
                       <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            undoChunks();
+                            toast.success('되돌리기 완료', {
+                              description: '청크가 이전 상태로 복원되었습니다.',
+                            });
+                          }}
+                          disabled={!canUndo}
+                          className="text-muted-foreground hover:text-foreground"
+                          title="청크 수정 되돌리기 (Ctrl+Z)"
+                        >
+                          <Undo2 className="mr-1.5 h-4 w-4" />
+                          되돌리기
+                        </Button>
                         <Button
                           variant="secondary"
                           onClick={() => {
@@ -949,25 +992,14 @@ export default function Home() {
                 )}
 
                 {!isEditMode && (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Button
-                      onClick={() => downloadText(inputText, '추출 원문')}
-                      disabled={!inputText}
-                      variant="outline"
-                      className="h-12 text-base font-semibold"
-                      size="lg"
-                    >
-                      추출 원문 TXT 다운로드
-                    </Button>
-                    <Button
-                      onClick={() => downloadText(processedText, 'MISO 등록용')}
-                      disabled={!result?.canDownload || !processedText}
-                      className="h-12 text-base font-semibold"
-                      size="lg"
-                    >
-                      MISO 등록용 TXT 다운로드
-                    </Button>
-                  </div>
+                  <Button
+                    onClick={() => downloadText(processedText, 'MISO 등록용')}
+                    disabled={!result?.canDownload || !processedText}
+                    className="w-full h-12 text-base font-semibold"
+                    size="lg"
+                  >
+                    MISO 등록용 TXT 다운로드
+                  </Button>
                 )}
               </CardContent>
             </Card>

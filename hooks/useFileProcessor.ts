@@ -59,6 +59,8 @@ export interface UseFileProcessorReturn {
   setSeparator: (separator: string) => void;
   setProcessedText: (text: string) => void;
   updateChunks: (chunks: string[]) => void;
+  undoChunks: () => void;
+  canUndo: boolean;
   reset: () => void;
 
   handleFileRead: (file: File) => Promise<void>;
@@ -67,6 +69,9 @@ export interface UseFileProcessorReturn {
   reprocessExcel: (update: ExcelProcessingUpdate) => Promise<void>;
   redecodeText: (encoding: 'utf-8' | 'euc-kr') => Promise<void>;
 }
+
+/** 청크 수정 되돌리기 히스토리의 최대 보관 개수. */
+const CHUNK_HISTORY_LIMIT = 50;
 
 interface RetainedTextFile {
   buffer: ArrayBuffer;
@@ -318,7 +323,9 @@ export function useFileProcessor(): UseFileProcessorReturn {
   const [textEncoding, setTextEncoding] = useState<'utf-8' | 'euc-kr' | null>(null);
   const [encodingReviewRequired, setEncodingReviewRequired] = useState(false);
   const [extractionIssues, setExtractionIssues] = useState<PreprocessIssue[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
 
+  const chunkHistoryRef = useRef<string[][]>([]);
   const sourceDocumentRef = useRef<ExtractedDocument | null>(null);
   const textFileRef = useRef<RetainedTextFile | null>(null);
   const fileOperationRef = useRef(0);
@@ -326,12 +333,18 @@ export function useFileProcessor(): UseFileProcessorReturn {
   const processOperationRef = useRef(0);
   const processAbortRef = useRef<AbortController | null>(null);
 
+  const clearChunkHistory = useCallback(() => {
+    chunkHistoryRef.current = [];
+    setCanUndo(false);
+  }, []);
+
   const clearResult = useCallback(() => {
     setResult(null);
     setProcessedText('');
     setProcessedChunks([]);
     setStats(null);
-  }, []);
+    clearChunkHistory();
+  }, [clearChunkHistory]);
 
   const invalidatePreprocessing = useCallback(() => {
     processOperationRef.current += 1;
@@ -591,6 +604,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
       if (operationId !== processOperationRef.current || controller.signal.aborted) return;
 
       const mergedResult = mergeResultIssues(payload.data, extractionIssues);
+      clearChunkHistory();
       setResult(mergedResult);
       setProcessedText(mergedResult.processedText);
       setProcessedChunks(mergedResult.chunks);
@@ -603,7 +617,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     } finally {
       if (processAbortRef.current === controller) processAbortRef.current = null;
     }
-  }, [extractionIssues, invalidatePreprocessing]);
+  }, [clearChunkHistory, extractionIssues, invalidatePreprocessing]);
 
   const processText = useCallback(async () => {
     const document = sourceDocumentRef.current;
@@ -631,7 +645,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
     }
   }, [runPreprocess]);
 
-  const updateChunks = useCallback((newChunks: string[]) => {
+  const commitChunks = useCallback((newChunks: string[]) => {
     invalidatePreprocessing();
     const originalLength = result?.stats.originalLength
       ?? documentSourceLength(sourceDocumentRef.current, inputText.length);
@@ -644,6 +658,25 @@ export function useFileProcessor(): UseFileProcessorReturn {
     setStatus('complete');
     setError(null);
   }, [extractionIssues, inputText.length, invalidatePreprocessing, result?.stats.originalLength]);
+
+  const updateChunks = useCallback((newChunks: string[]) => {
+    // 수정 전 상태를 히스토리에 쌓아 되돌리기를 지원한다.
+    chunkHistoryRef.current = [
+      ...chunkHistoryRef.current.slice(-(CHUNK_HISTORY_LIMIT - 1)),
+      processedChunks,
+    ];
+    setCanUndo(true);
+    commitChunks(newChunks);
+  }, [commitChunks, processedChunks]);
+
+  const undoChunks = useCallback(() => {
+    const history = chunkHistoryRef.current;
+    const previous = history[history.length - 1];
+    if (!previous) return;
+    chunkHistoryRef.current = history.slice(0, -1);
+    setCanUndo(chunkHistoryRef.current.length > 0);
+    commitChunks(previous);
+  }, [commitChunks]);
 
   return {
     file,
@@ -666,6 +699,8 @@ export function useFileProcessor(): UseFileProcessorReturn {
     setSeparator,
     setProcessedText,
     updateChunks,
+    undoChunks,
+    canUndo,
     reset,
     handleFileRead,
     handleLawRead,
