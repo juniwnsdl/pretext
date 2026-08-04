@@ -98,6 +98,29 @@ const documentTypes = [
   },
 ];
 
+// 전처리가 처음인 사용자가 방법을 고르기 전에 스스로 점검하는 질문 목록
+const documentPreChecks = [
+  {
+    question: 'PDF에서 글자를 마우스로 긁어 선택할 수 있나요?',
+    guidance:
+      '선택된다면 일반 문서입니다. 방법 1로 충분합니다. 선택되지 않으면 스캔본이어서 글자 인식 오류가 생길 수 있으니 방법 1을 시도해 보고 어려우면 방법 3을 검토하세요.',
+  },
+  {
+    question: '파일이 50MB를 넘거나 문서가 매우 긴가요?',
+    guidance: '업무·기간·부서·장 단위로 나눈 뒤 각각 처리하세요. 방법 2에 해당합니다.',
+  },
+  {
+    question: '서로 관계없는 내용이 한 파일에 섞여 있나요?',
+    guidance:
+      '다른 업무·기간·부서의 내용이 섞여 있으면 주제별 파일로 나누는 것이 검색 품질에 좋습니다. 방법 2에 해당합니다.',
+  },
+  {
+    question: '복잡한 표, 병합 셀, 수식이 들어 있나요?',
+    guidance:
+      '방법 1로 처리할 수 있습니다. 다만 바로 아래의 문서 구조 확인 항목을 미리 봐두고, 처리 후 결과를 원문과 꼭 비교하세요.',
+  },
+];
+
 const fileRoutes = [
   {
     category: '텍스트·데이터',
@@ -231,48 +254,71 @@ function HandlingGuide() {
       <CardHeader>
         <CardTitle>어떤 방법으로 문서를 처리하면 되나요?</CardTitle>
         <CardDescription className="leading-6">
-          대부분의 일반 문서는 이 전처리기만으로 충분합니다. 1번부터 시작하고, 처리하기 어려울 때만 다음 방법으로 넘어가세요.
+          전처리가 처음이어도 괜찮습니다. ① 내 문서를 잠깐 살펴보고 → ② 알맞은 처리 방법을 고르면 됩니다.
+          대부분의 일반 문서는 방법 1(이 전처리기)만으로 충분합니다.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <ol className="grid gap-3 lg:grid-cols-3">
-          {DOCUMENT_HANDLING_STAGES.map((stage) => (
-            <li
-              key={stage.id}
-              className={
-                stage.id === 'assisted-processing'
-                  ? 'rounded-lg border border-amber-300 bg-amber-50/50 p-4 dark:bg-amber-950/15'
-                  : 'rounded-lg border p-4'
-              }
-            >
-              <div className="mb-3 flex items-center gap-2">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                  {stage.step}
-                </span>
-                <p className="font-semibold leading-6">{stage.title}</p>
-              </div>
-              <p className="text-sm leading-6 text-muted-foreground">{stage.description}</p>
-              <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
-                {stage.examples.map((example) => (
-                  <li key={example}>{example}</li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ol>
-
         <section className="rounded-lg border bg-muted/30 p-4">
-          <h3 className="font-semibold">문서 구조는 이렇게 확인하세요</h3>
-          <div className="mt-3 grid gap-3 lg:grid-cols-3">
-            {TABLE_HANDLING_GUIDANCE.map((item) => (
-              <div key={item.title} className="rounded-md bg-background p-3">
-                <p className="text-sm font-medium">{item.title}</p>
-                <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                  {item.description}
-                </p>
+          <h3 className="font-semibold">① 먼저, 내 문서를 잠깐 살펴보세요</h3>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            아래 질문에 답해 보면 어떤 방법이 맞는지 자연스럽게 정해집니다.
+          </p>
+          <div className="mt-3 overflow-hidden rounded-md border bg-background">
+            {documentPreChecks.map((check) => (
+              <div key={check.question} className="flex flex-col gap-1 border-b p-3 last:border-b-0">
+                <p className="text-sm font-medium">{check.question}</p>
+                <p className="text-sm leading-6 text-muted-foreground">{check.guidance}</p>
               </div>
             ))}
           </div>
+
+          <div className="mt-4">
+            <h4 className="text-sm font-semibold">문서 구조는 이렇게 확인하세요</h4>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              표·머리행·수식처럼 구조가 있는 내용은 처리 과정에서 형태가 바뀔 수 있습니다.
+              내 문서에 해당하는 항목만 미리 봐두고, 처리 후 결과 검토 단계에서 같은 항목을 원문과 비교하세요.
+            </p>
+            <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              {TABLE_HANDLING_GUIDANCE.map((item) => (
+                <div key={item.title} className="rounded-md border bg-background p-3">
+                  <p className="text-sm font-medium">{item.title}</p>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    {item.description}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="mb-3 font-semibold">② 그다음, 처리 방법을 순서대로 시도하세요</h3>
+          <ol className="grid gap-3 lg:grid-cols-3">
+            {DOCUMENT_HANDLING_STAGES.map((stage) => (
+              <li
+                key={stage.id}
+                className={
+                  stage.id === 'assisted-processing'
+                    ? 'rounded-lg border border-amber-300 bg-amber-50/50 p-4 dark:bg-amber-950/15'
+                    : 'rounded-lg border p-4'
+                }
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+                    {stage.step}
+                  </span>
+                  <p className="font-semibold leading-6">{stage.title}</p>
+                </div>
+                <p className="text-sm leading-6 text-muted-foreground">{stage.description}</p>
+                <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
+                  {stage.examples.map((example) => (
+                    <li key={example}>{example}</li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ol>
         </section>
 
         <div className="rounded-lg bg-primary/10 px-4 py-3 text-sm leading-6">
@@ -391,7 +437,7 @@ function UsageStepsGuide() {
         <CardTitle>사용 순서</CardTitle>
         <CardDescription>화면의 1~4단계를 따라가고 마지막에 TXT를 내려받으세요.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-5">
         <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           {steps.map((step, index) => {
             const Icon = step.icon;
@@ -409,6 +455,26 @@ function UsageStepsGuide() {
             );
           })}
         </ol>
+
+        <section className="rounded-lg border bg-muted/30 p-4">
+          <h3 className="font-semibold">다운로드한 TXT를 MISO에 등록하는 방법</h3>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            MISO 지식 추가하기 → 데이터 업로드 하기 순서로 진행한 다음, 데이터 임베딩 단계에서 청크 설정을{' '}
+            <span className="font-medium text-foreground">사용자 설정</span>으로 변경합니다. 세그먼트 식별자는{' '}
+            <span className="font-mono">@@@</span>, 최대 청크 길이는{' '}
+            <span className="font-medium text-foreground">4000</span>으로 맞춰 이 전처리기의 구분자·상한과 일치시키세요.
+          </p>
+          <figure className="mt-3 overflow-hidden rounded-md border bg-background">
+            <img
+              src="/images/miso-chunk-settings-guide.png"
+              alt="MISO 데이터 임베딩 단계에서 청크 설정을 사용자 설정으로 변경하고 세그먼트 식별자 @@@, 최대 청크 길이 4000을 입력하는 화면"
+              className="w-full"
+            />
+            <figcaption className="border-t px-4 py-2 text-xs leading-5 text-muted-foreground">
+              데이터 임베딩 단계에서 청크 설정을 사용자 설정으로 변경한 화면 예시입니다.
+            </figcaption>
+          </figure>
+        </section>
       </CardContent>
     </Card>
   );
@@ -449,7 +515,7 @@ function DocumentRulesGuide() {
         </div>
 
         <p className="rounded-lg bg-primary/10 px-4 py-3 text-sm leading-6">
-          <strong>[위임전결규정 매뉴얼]</strong>과 A~J 항목 구조가 확인되면 엑셀·내부 데이터 외 유형에서 전용 기준을 우선 적용합니다.
+          <strong>[위임전결규�� 매뉴얼]</strong>과 A~J 항목 구조가 확인되면 엑셀·내부 데이터 외 유형에서 전용 기준을 우선 적용합니다.
         </p>
       </CardContent>
     </Card>
