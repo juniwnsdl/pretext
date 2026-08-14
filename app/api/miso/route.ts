@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
+export const maxDuration = 300;
 
 interface MisoWorkflowRunData {
   id: string;

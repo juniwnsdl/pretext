@@ -9,6 +9,7 @@ import {
 
 // 큰 파일 업로드(최대 50MB)를 지원하기 위해 Node.js 런타임 사용
 export const runtime = 'nodejs';
+export const maxDuration = 300;
 
 interface MisoUploadResponse {
   id: string;
