@@ -7,8 +7,18 @@ import {
   extractDocxDocument,
 // @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
 } from './docx-extractor.ts';
+import {
+  requestPdfUploadTicket,
+  uploadPdfWithTus,
+// @ts-expect-error Node's type-stripping runtime requires the explicit .ts extension.
+} from './supabase-pdf-uploader.ts';
 
 type FetchImpl = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type PdfStager = (
+  file: File,
+  fetchImpl: FetchImpl,
+  signal?: AbortSignal,
+) => Promise<string>;
 
 interface DocxFile {
   name: string;
@@ -108,20 +118,43 @@ function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T>
   });
 }
 
+async function stagePdfInSupabase(
+  file: File,
+  fetchImpl: FetchImpl,
+  signal?: AbortSignal,
+): Promise<string> {
+  const ticket = await requestPdfUploadTicket(file, fetchImpl, signal);
+  await uploadPdfWithTus(file, ticket, signal);
+  return ticket.path;
+}
+
 /** Performs the existing two-request MISO file extraction flow without UI state. */
 export async function extractTextViaMiso(
   file: File,
   fetchImpl: FetchImpl = fetch,
   signal?: AbortSignal,
+  stagePdf: PdfStager = stagePdfInSupabase,
 ): Promise<ExtractedDocument> {
   throwIfAborted(signal);
-  const uploadBody = new FormData();
-  uploadBody.append('file', file);
-  const uploadResponse = await fetchImpl('/api/miso/upload', {
-    method: 'POST',
-    body: uploadBody,
-    signal,
-  });
+  let uploadResponse: Response;
+  if (sourceFormat(file.name) === 'pdf') {
+    const storagePath = await raceWithAbort(stagePdf(file, fetchImpl, signal), signal);
+    throwIfAborted(signal);
+    uploadResponse = await fetchImpl('/api/miso/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storagePath, fileName: file.name }),
+      signal,
+    });
+  } else {
+    const uploadBody = new FormData();
+    uploadBody.append('file', file);
+    uploadResponse = await fetchImpl('/api/miso/upload', {
+      method: 'POST',
+      body: uploadBody,
+      signal,
+    });
+  }
   throwIfAborted(signal);
   const uploadResult = await raceWithAbort(readApiBody(uploadResponse), signal);
   throwIfAborted(signal);

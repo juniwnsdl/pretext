@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { createSupabaseAdminClient } from '@/lib/supabase-admin';
+import { TEMP_PDF_BUCKET } from '@/lib/pdf-upload-contract';
+import {
+  uploadStoredPdfToMiso,
+  type TemporaryPdfStorage,
+} from '@/lib/supabase-pdf-server';
+
 // 큰 파일 업로드(최대 50MB)를 지원하기 위해 Node.js 런타임 사용
 export const runtime = 'nodejs';
 
@@ -15,6 +22,7 @@ export async function POST(request: NextRequest) {
     const contentType = request.headers.get('content-type') || '';
 
     let file: File | null = null;
+    let stagedPdf: { storagePath: string; fileName: string } | null = null;
 
     // 1) multipart/form-data 방식 (브라우저 파일 업로드)
     if (contentType.includes('multipart/form-data')) {
@@ -26,27 +34,37 @@ export async function POST(request: NextRequest) {
       const body = (await request.json()) as {
         text?: string;
         fileName?: string;
+        storagePath?: string;
       };
 
-      if (!body.text || typeof body.text !== 'string') {
+      if (
+        typeof body.storagePath === 'string'
+        && body.storagePath.trim().length > 0
+        && typeof body.fileName === 'string'
+        && body.fileName.trim().length > 0
+      ) {
+        stagedPdf = {
+          storagePath: body.storagePath.trim(),
+          fileName: body.fileName.trim(),
+        };
+      } else if (!body.text || typeof body.text !== 'string') {
         return NextResponse.json(
           {
-            error:
-              'JSON 요청의 경우 text 필드(문자열)가 필요합니다.',
+            error: 'JSON 요청에는 임시 PDF 경로 또는 text 값이 필요합니다.',
           },
           { status: 400 },
         );
+      } else {
+        const name =
+          typeof body.fileName === 'string' && body.fileName.trim().length > 0
+            ? body.fileName.trim()
+            : 'document.txt';
+
+        // 텍스트를 가상의 파일로 래핑하여 미소 업로드 API에 전달
+        file = new File([body.text], name, {
+          type: 'text/plain;charset=utf-8',
+        });
       }
-
-      const name =
-        typeof body.fileName === 'string' && body.fileName.trim().length > 0
-          ? body.fileName.trim()
-          : 'document.txt';
-
-      // 텍스트를 가상의 파일로 래핑하여 미소 업로드 API에 전달
-      file = new File([body.text], name, {
-        type: 'text/plain;charset=utf-8',
-      });
     } else {
       return NextResponse.json(
         {
@@ -57,7 +75,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!file) {
+    if (!file && !stagedPdf) {
       return NextResponse.json(
         { error: '파일이 제공되지 않았습니다.' },
         { status: 400 },
@@ -66,7 +84,7 @@ export async function POST(request: NextRequest) {
 
     // 미소 스펙에 맞춘 최대 업로드 크기 (50MB)
     const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
-    if (file.size > MAX_FILE_SIZE_BYTES) {
+    if (file && file.size > MAX_FILE_SIZE_BYTES) {
       return NextResponse.json(
         {
           error:
@@ -90,6 +108,23 @@ export async function POST(request: NextRequest) {
     const misoEndpoint =
       process.env.NEXT_PUBLIC_MISO_ENDPOINT ??
       'https://api.holdings.miso.gs';
+
+    if (stagedPdf) {
+      const supabase = createSupabaseAdminClient();
+      const storage = supabase.storage.from(TEMP_PDF_BUCKET) as unknown as TemporaryPdfStorage;
+      const uploadData = await uploadStoredPdfToMiso({
+        storagePath: stagedPdf.storagePath,
+        fileName: stagedPdf.fileName,
+        storage,
+        misoEndpoint,
+        apiKey,
+      });
+      return NextResponse.json({ success: true, ...uploadData });
+    }
+
+    if (!file) {
+      return NextResponse.json({ error: '파일이 제공되지 않았습니다.' }, { status: 400 });
+    }
 
     // 미소 파일 업로드 API로 전송
     const uploadFormData = new FormData();
